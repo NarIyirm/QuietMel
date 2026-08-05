@@ -4,11 +4,10 @@ import {
   Bookmark,
   Clock3,
   Coffee,
-  CloudSun,
-  Layers3,
   Leaf,
   Library,
   LogIn,
+  LogOut,
   MapPin,
   MapPinned,
   Menu,
@@ -25,12 +24,26 @@ import {
   Waves,
   type LucideIcon,
 } from 'lucide-react'
+import { AuthPanel } from './components/AuthPanel'
+import { CrowdRefreshButton } from './components/CrowdRefreshButton'
+import { MapLayersControl } from './components/MapLayersControl'
+import { PulseLoader } from './components/PulseLoader'
 import { RoutePlanner, type RouteSheetState } from './components/RoutePlanner'
 import { NavigationDemo } from './components/NavigationDemo'
-import { SensoryForecast } from './components/SensoryForecast'
 import { type DemoRouteId, type NavigationRouteId } from './data/demoRoutes'
 import { PLACES } from './data/places'
 import { QUIET_SPACES } from './data/quietSpaces'
+import { useLiveCrowd } from './hooks/useLiveCrowd'
+import { usePedestrianSensors } from './hooks/usePedestrianSensors'
+import type { CrowdLayerMode, PedestrianSensor } from './lib/crowd'
+import {
+  clearStoredAuth,
+  getUserInitial,
+  logoutAuth,
+  readStoredAuth,
+  restoreStoredAuth,
+  type StoredAuth,
+} from './lib/auth'
 import './styles/app.css'
 
 const MapView = lazy(() => import('./components/MapView'))
@@ -154,6 +167,8 @@ function App() {
   const [activeCategory, setActiveCategory] = useState<CategoryId | null>(null)
   const [selectedPlaceId, setSelectedPlaceId] = useState(PLACES[0].id)
   const [locateRequest, setLocateRequest] = useState(0)
+  const [crowdLayerMode, setCrowdLayerMode] = useState<CrowdLayerMode>('heatmap')
+  const [selectedPedestrianSensorId, setSelectedPedestrianSensorId] = useState<number | null>(null)
   const [zoomRequest, setZoomRequest] = useState({ id: 0, delta: 0 })
   const [statusMessage, setStatusMessage] = useState('')
   const [routePlanningActive, setRoutePlanningActive] = useState(false)
@@ -166,9 +181,31 @@ function App() {
   const [quietFinderOpen, setQuietFinderOpen] = useState(false)
   const [selectedQuietSpaceId, setSelectedQuietSpaceId] = useState(QUIET_SPACES[0].id)
   const [quietSpaceDestinationId, setQuietSpaceDestinationId] = useState<string | null>(null)
-  const [forecastActive, setForecastActive] = useState(false)
-  const [forecastSlotIndex, setForecastSlotIndex] = useState(0)
   const [routeSheetState, setRouteSheetState] = useState<RouteSheetState>('medium')
+  const [authPanelOpen, setAuthPanelOpen] = useState(false)
+  const [authPanelMode, setAuthPanelMode] = useState<'login' | 'register'>('login')
+  const [authState, setAuthState] = useState<StoredAuth | null>(() => readStoredAuth())
+  const [loggingOut, setLoggingOut] = useState(false)
+  const {
+    snapshot: crowdSnapshot,
+    loading: crowdLoading,
+    refreshing: crowdRefreshing,
+    error: crowdError,
+    refresh: refreshCrowd,
+  } = useLiveCrowd()
+  const { catalogue: sensorCatalogue } = usePedestrianSensors()
+
+  useEffect(() => {
+    let active = true
+
+    void restoreStoredAuth().then((auth) => {
+      if (active) setAuthState(auth)
+    })
+
+    return () => {
+      active = false
+    }
+  }, [])
 
   const visiblePlaces = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase()
@@ -194,6 +231,73 @@ function App() {
   const quietSpaceDestination = QUIET_SPACES.find(
     (space) => space.id === quietSpaceDestinationId,
   ) ?? null
+  const userInitial = getUserInitial(authState?.user)
+  const pedestrianSensors = useMemo<PedestrianSensor[]>(() => {
+    if (sensorCatalogue?.sensors.length) return sensorCatalogue.sensors
+    return (crowdSnapshot?.points ?? []).map((point) => ({
+      sensorId: point.sensorId,
+      name: point.name,
+      description: `${point.name} pedestrian counting location.`,
+      latitude: point.latitude,
+      longitude: point.longitude,
+      status: 'A',
+      googlePlaceId: null,
+    }))
+  }, [crowdSnapshot?.points, sensorCatalogue?.sensors])
+
+  async function handleCrowdRefresh() {
+    const refreshedSnapshot = await refreshCrowd()
+    if (!refreshedSnapshot) {
+      setStatusMessage('Live crowd data could not be refreshed.')
+      return
+    }
+
+    const measuredAt = new Date(
+      refreshedSnapshot.newestReadingAt ?? refreshedSnapshot.fetchedAt,
+    )
+    setStatusMessage(
+      `Live crowd data refreshed. Latest reading ${new Intl.DateTimeFormat('en-AU', {
+        hour: 'numeric',
+        minute: '2-digit',
+      }).format(measuredAt)} from ${refreshedSnapshot.pointCount} sensors.`,
+    )
+  }
+
+  function handleCrowdLayerModeChange(mode: CrowdLayerMode) {
+    setCrowdLayerMode(mode)
+    setSelectedPedestrianSensorId(null)
+  }
+
+  function openAuthPanel(mode: 'login' | 'register' = 'login') {
+    setAuthPanelMode(mode)
+    setAuthPanelOpen(true)
+  }
+
+  function handleAuthenticated(auth: StoredAuth) {
+    setAuthState(auth)
+    setStatusMessage(`Logged in as ${auth.user.email ?? 'QuietMel user'}.`)
+  }
+
+  function handleLoggedOut() {
+    setAuthState(null)
+    setStatusMessage('You have logged out.')
+  }
+
+  async function handleLogout() {
+    if (!authState || loggingOut) return
+
+    setLoggingOut(true)
+
+    try {
+      await logoutAuth(authState.session.accessToken)
+    } catch {
+      // Clear local authentication when the remote session already expired.
+    } finally {
+      clearStoredAuth()
+      setLoggingOut(false)
+      handleLoggedOut()
+    }
+  }
 
   function showComingSoon(feature: string) {
     setStatusMessage(`${feature} will be added in a later version.`)
@@ -210,7 +314,6 @@ function App() {
     setSelectedRouteId('quietest')
     setRoutePlanningActive(true)
     setRouteSheetState('medium')
-    setForecastActive(false)
     setActiveCategory(null)
     setStatusMessage(`Showing three demo routes to ${destination}.`)
   }
@@ -237,7 +340,6 @@ function App() {
     setRerouteHandled(false)
     setQuietFinderOpen(false)
     setQuietSpaceDestinationId(null)
-    setForecastActive(false)
     setStatusMessage('Demo navigation started.')
   }
 
@@ -321,7 +423,7 @@ function App() {
         </button>
       </aside>
 
-      <section className={`map-region${routePlanningActive ? ` map-region--planning map-region--route-sheet-${routeSheetState}` : ''}${navigationActive ? ' map-region--navigating' : ''}${forecastActive ? ' map-region--forecasting' : ''}`} aria-label="Explore quiet places">
+      <section className={`map-region${routePlanningActive ? ` map-region--planning map-region--route-sheet-${routeSheetState}` : ''}${navigationActive ? ' map-region--navigating' : ''}`} aria-label="Explore quiet places">
         <Suspense
           fallback={
             <div className="map-loading" role="status">
@@ -342,7 +444,11 @@ function App() {
             quietFinderOpen={quietFinderOpen}
             selectedQuietSpaceId={selectedQuietSpaceId}
             quietSpaceDestination={quietSpaceDestination}
-            forecastSlotIndex={forecastActive ? forecastSlotIndex : null}
+            crowdPoints={crowdSnapshot?.points ?? []}
+            pedestrianSensors={pedestrianSensors}
+            crowdLayerMode={crowdLayerMode}
+            selectedPedestrianSensorId={selectedPedestrianSensorId}
+            onPedestrianSensorSelect={setSelectedPedestrianSensorId}
             routeSheetState={routeSheetState}
             onQuietSpaceSelect={setSelectedQuietSpaceId}
             onQuietSpaceConfirm={navigateToQuietSpace}
@@ -374,50 +480,40 @@ function App() {
           />
         ) : null}
 
-        <aside className="sensory-pressure-legend" aria-label="Sensory pressure heatmap legend">
+        <aside className="sensory-pressure-legend" aria-label="Live pedestrian activity heatmap legend">
           <div className="sensory-pressure-legend__heading">
             <div>
-              <strong>Sensory pressure</strong>
-              <span>{forecastActive ? 'Forecast estimate' : 'Demo estimate'}</span>
+              <strong>Crowd level</strong>
+              <span aria-live="polite">
+                {crowdLoading && !crowdSnapshot
+                  ? 'Loading live data'
+                  : crowdError && !crowdSnapshot
+                    ? 'Live data unavailable'
+                    : crowdSnapshot?.stale
+                      ? `Data delayed · ${crowdSnapshot.pointCount} sensors`
+                      : crowdSnapshot
+                        ? `Live · ${new Intl.DateTimeFormat('en-AU', {
+                            hour: 'numeric',
+                            minute: '2-digit',
+                          }).format(new Date(crowdSnapshot.newestReadingAt ?? crowdSnapshot.fetchedAt))} · ${crowdSnapshot.pointCount} sensors`
+                        : 'Waiting for live data'}
+              </span>
             </div>
-            {!forecastActive && !navigationActive && !routePlanningActive ? (
-              <button
-                type="button"
-                className="sensory-pressure-legend__forecast"
-                aria-label="Open Sensory Forecast"
-                onClick={() => {
-                  setForecastActive(true)
-                  setForecastSlotIndex(0)
-                  setStatusMessage('Sensory Forecast opened. Showing a static estimate for 2:00 PM.')
-                }}
-              >
-                <CloudSun aria-hidden="true" />
-                Forecast
-              </button>
-            ) : null}
           </div>
           <div className="sensory-pressure-legend__scale" aria-hidden="true" />
           <div className="sensory-pressure-legend__labels">
             <span>Low</span>
-            <span>High pressure</span>
+            <span>High activity</span>
           </div>
+          <a
+            className="sensory-pressure-legend__source"
+            href={crowdSnapshot?.source.url ?? 'https://data.melbourne.vic.gov.au/explore/dataset/pedestrian-counting-system-past-hour-counts-per-minute/'}
+            target="_blank"
+            rel="noreferrer"
+          >
+            City of Melbourne · CC BY 4.0
+          </a>
         </aside>
-
-        {!navigationActive && !routePlanningActive ? (
-          <SensoryForecast
-            active={forecastActive}
-            slotIndex={forecastSlotIndex}
-            onSlotChange={(slotIndex) => {
-              setForecastSlotIndex(slotIndex)
-              setStatusMessage('Sensory forecast time updated.')
-            }}
-            onExit={() => {
-              setForecastActive(false)
-              setForecastSlotIndex(0)
-              setStatusMessage('Sensory Forecast closed. Current map conditions restored.')
-            }}
-          />
-        ) : null}
 
         <div className="desktop-search-panel">
           <SearchField
@@ -436,20 +532,61 @@ function App() {
           />
         ) : null}
 
-        <details className="desktop-profile">
+        <details className={`desktop-profile${authState ? ' desktop-profile--authenticated' : ''}`}>
           <summary aria-label="Open account menu">
-            <UserRound aria-hidden="true" size={21} strokeWidth={1.8} />
+            {userInitial ? <span aria-hidden="true">{userInitial}</span> : <UserRound aria-hidden="true" size={21} strokeWidth={1.8} />}
           </summary>
           <nav className="desktop-profile__menu" aria-label="Account options">
-            <span>Account</span>
-            <button type="button" onClick={() => showComingSoon('Log in')}>
-              <LogIn aria-hidden="true" size={16} />
-              Log in
-            </button>
-            <button type="button" onClick={() => showComingSoon('Account creation')}>
-              <UserPlus aria-hidden="true" size={16} />
-              Create account
-            </button>
+            <span>{authState?.user.email ?? 'Account'}</span>
+            {authState ? (
+              <>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.currentTarget.closest('details')?.removeAttribute('open')
+                    openAuthPanel('login')
+                  }}
+                >
+                  <Settings aria-hidden="true" size={16} />
+                  Settings
+                </button>
+                <button
+                  type="button"
+                  className="desktop-profile__logout"
+                  disabled={loggingOut}
+                  onClick={(event) => {
+                    event.currentTarget.closest('details')?.removeAttribute('open')
+                    void handleLogout()
+                  }}
+                >
+                  {loggingOut ? <PulseLoader label="Logging out" /> : <LogOut aria-hidden="true" size={16} />}
+                  {loggingOut ? 'Logging out…' : 'Log out'}
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.currentTarget.closest('details')?.removeAttribute('open')
+                    openAuthPanel('login')
+                  }}
+                >
+                  <LogIn aria-hidden="true" size={16} />
+                  Log in
+                </button>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.currentTarget.closest('details')?.removeAttribute('open')
+                    openAuthPanel('register')
+                  }}
+                >
+                  <UserPlus aria-hidden="true" size={16} />
+                  Create account
+                </button>
+              </>
+            )}
           </nav>
         </details>
 
@@ -482,9 +619,63 @@ function App() {
                 <Search aria-hidden="true" size={21} />
               </button>
             </form>
-            <button type="button" className="mobile-avatar" aria-label="Open profile" onClick={() => showComingSoon('Profile')}>
-              Q
-            </button>
+            <details className={`mobile-profile${authState ? ' mobile-profile--authenticated' : ''}`}>
+              <summary className="mobile-avatar" aria-label="Open account menu">
+                {userInitial ?? 'Q'}
+              </summary>
+              <nav className="mobile-profile__menu" aria-label="Account options">
+                <span>{authState?.user.email ?? 'Account'}</span>
+                {authState ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.currentTarget.closest('details')?.removeAttribute('open')
+                        openAuthPanel('login')
+                      }}
+                    >
+                      <Settings aria-hidden="true" size={16} />
+                      Settings
+                    </button>
+                    <button
+                      type="button"
+                      className="mobile-profile__logout"
+                      disabled={loggingOut}
+                      onClick={(event) => {
+                        event.currentTarget.closest('details')?.removeAttribute('open')
+                        void handleLogout()
+                      }}
+                    >
+                      {loggingOut ? <PulseLoader label="Logging out" /> : <LogOut aria-hidden="true" size={16} />}
+                      {loggingOut ? 'Logging out…' : 'Log out'}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.currentTarget.closest('details')?.removeAttribute('open')
+                        openAuthPanel('login')
+                      }}
+                    >
+                      <LogIn aria-hidden="true" size={16} />
+                      Log in
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.currentTarget.closest('details')?.removeAttribute('open')
+                        openAuthPanel('register')
+                      }}
+                    >
+                      <UserPlus aria-hidden="true" size={16} />
+                      Create account
+                    </button>
+                  </>
+                )}
+              </nav>
+            </details>
           </div>
 
           {!routePlanningActive ? (
@@ -496,9 +687,17 @@ function App() {
           ) : null}
         </div>
 
-        <button type="button" className="layers-button" aria-label="Map layers" onClick={() => showComingSoon('Map layers')}>
-          <Layers3 aria-hidden="true" size={23} />
-        </button>
+        <MapLayersControl
+          mode={crowdLayerMode}
+          sensorCount={pedestrianSensors.length}
+          sensorLocationsAvailable={pedestrianSensors.length > 0}
+          onModeChange={handleCrowdLayerModeChange}
+        />
+
+        <CrowdRefreshButton
+          refreshing={crowdRefreshing}
+          onRefresh={() => void handleCrowdRefresh()}
+        />
 
         <button
           type="button"
@@ -539,13 +738,23 @@ function App() {
             </span>
             <span>Saved</span>
           </button>
-          <button className="mobile-nav__item" type="button" onClick={() => showComingSoon('Profile')}>
+          <button className="mobile-nav__item" type="button" onClick={() => openAuthPanel('login')}>
             <span className="mobile-nav__icon">
               <UserRound aria-hidden="true" size={23} />
             </span>
-            <span>Profile</span>
+            <span>{authState ? 'Account' : 'Profile'}</span>
           </button>
         </nav>
+
+        {authPanelOpen ? (
+          <AuthPanel
+            auth={authState}
+            initialMode={authPanelMode}
+            open
+            onAuthenticated={handleAuthenticated}
+            onClose={() => setAuthPanelOpen(false)}
+          />
+        ) : null}
 
         <p className="sr-only" role="status" aria-live="polite">
           {statusMessage}

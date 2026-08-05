@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { ExternalLink, X } from 'lucide-react'
 import {
   AdvancedMarker,
   APIProvider,
@@ -7,16 +8,17 @@ import {
   useMap,
 } from '@vis.gl/react-google-maps'
 import {
-  SENSORY_PRESSURE_POINTS,
-} from '../data/sensoryPressure'
-import {
   DEMO_REROUTE,
   DEMO_ROUTES,
   type DemoRouteId,
   type NavigationRouteId,
 } from '../data/demoRoutes'
 import { QUIET_SPACES, type QuietSpace } from '../data/quietSpaces'
-import { getForecastPressure } from '../data/sensoryForecast'
+import type {
+  CrowdLayerMode,
+  LiveCrowdPoint,
+  PedestrianSensor,
+} from '../lib/crowd'
 
 type ZoomRequest = {
   id: number
@@ -35,7 +37,11 @@ type MapViewProps = {
   quietFinderOpen: boolean
   selectedQuietSpaceId: string
   quietSpaceDestination: QuietSpace | null
-  forecastSlotIndex: number | null
+  crowdPoints: LiveCrowdPoint[]
+  pedestrianSensors: PedestrianSensor[]
+  crowdLayerMode: CrowdLayerMode
+  selectedPedestrianSensorId: number | null
+  onPedestrianSensorSelect: (sensorId: number | null) => void
   routeSheetState: 'collapsed' | 'medium' | 'expanded'
   onQuietSpaceSelect: (spaceId: string) => void
   onQuietSpaceConfirm: (spaceId: string) => void
@@ -44,7 +50,7 @@ type MapViewProps = {
 
 const MELBOURNE_CENTRE = { lat: -37.8136, lng: 144.9631 }
 const DEFAULT_ZOOM = 14
-const SENSORY_COLOR_STOPS = [
+const CROWD_COLOR_STOPS = [
   { value: 0, color: [82, 163, 181] },
   { value: 0.35, color: [103, 180, 157] },
   { value: 0.56, color: [202, 199, 119] },
@@ -56,11 +62,142 @@ const SENSORY_COLOR_STOPS = [
 const PULSE_DURATION = 4400
 const PULSE_THRESHOLD = 75
 
-function getPressureColor(pressure: number) {
-  const value = Math.min(1, Math.max(0, pressure / 100))
-  const upperIndex = SENSORY_COLOR_STOPS.findIndex((stop) => value <= stop.value)
-  const upper = SENSORY_COLOR_STOPS[Math.max(1, upperIndex)]
-  const lower = SENSORY_COLOR_STOPS[Math.max(0, upperIndex - 1)]
+type DynamicPlaceDetails = {
+  displayName: string | null
+  formattedAddress: string | null
+  editorialSummary: string | null
+  googleMapsUri: string | null
+}
+
+const placeDetailsSessionCache = new Map<number, Promise<DynamicPlaceDetails | null>>()
+
+async function requestDynamicPlaceDetails(sensor: PedestrianSensor) {
+  const cached = placeDetailsSessionCache.get(sensor.sensorId)
+  if (cached) return cached
+
+  const request = (async () => {
+    const { Place } = await google.maps.importLibrary('places')
+    let place: google.maps.places.Place | undefined
+
+    if (sensor.googlePlaceId) {
+      place = new Place({ id: sensor.googlePlaceId })
+      await place.fetchFields({
+        fields: ['displayName', 'formattedAddress', 'editorialSummary', 'googleMapsURI'],
+      })
+    } else {
+      const result = await Place.searchByText({
+        textQuery: `${sensor.name}, Melbourne VIC, Australia`,
+        fields: [
+          'displayName',
+          'formattedAddress',
+          'editorialSummary',
+          'googleMapsURI',
+        ],
+        locationBias: {
+          center: { lat: sensor.latitude, lng: sensor.longitude },
+          radius: 180,
+        },
+        language: 'en-AU',
+        region: 'AU',
+        maxResultCount: 1,
+      })
+      place = result.places[0]
+    }
+
+    if (!place) return null
+    return {
+      displayName: place.displayName ?? null,
+      formattedAddress: place.formattedAddress ?? null,
+      editorialSummary: place.editorialSummary ?? null,
+      googleMapsUri: place.googleMapsURI ?? null,
+    }
+  })()
+
+  placeDetailsSessionCache.set(sensor.sensorId, request)
+  request.catch(() => placeDetailsSessionCache.delete(sensor.sensorId))
+  return request
+}
+
+function DynamicPlaceSummary({ sensor }: { sensor: PedestrianSensor }) {
+  const [state, setState] = useState<{
+    status: 'loading' | 'ready' | 'unavailable'
+    details: DynamicPlaceDetails | null
+  }>({ status: 'loading', details: null })
+
+  useEffect(() => {
+    let active = true
+    void requestDynamicPlaceDetails(sensor)
+      .then((details) => {
+        if (!active) return
+        setState({
+          status: details ? 'ready' : 'unavailable',
+          details,
+        })
+      })
+      .catch(() => {
+        if (active) setState({ status: 'unavailable', details: null })
+      })
+
+    return () => {
+      active = false
+    }
+  }, [sensor])
+
+  if (state.status === 'loading') {
+    return (
+      <div
+        className="pedestrian-sensor-card__place-skeleton"
+        aria-label="Loading Google Maps place details"
+      >
+        <span />
+        <span />
+      </div>
+    )
+  }
+
+  if (!state.details) {
+    return (
+      <div className="pedestrian-sensor-card__place-details">
+        <p>{sensor.description}</p>
+        <small>Live Google details are unavailable.</small>
+      </div>
+    )
+  }
+
+  const details = state.details
+  return (
+    <div className="pedestrian-sensor-card__place-details">
+      {details.displayName && details.displayName !== sensor.name ? (
+        <b>{details.displayName}</b>
+      ) : null}
+      <p>
+        {details.editorialSummary || details.formattedAddress || sensor.description}
+      </p>
+      {details.editorialSummary && details.formattedAddress ? (
+        <small>{details.formattedAddress}</small>
+      ) : null}
+      {details.googleMapsUri ? (
+        <a href={details.googleMapsUri} target="_blank" rel="noreferrer">
+          View on Google Maps
+          <ExternalLink aria-hidden="true" size={13} />
+        </a>
+      ) : null}
+    </div>
+  )
+}
+
+function formatReadingTime(value: string) {
+  return new Intl.DateTimeFormat('en-AU', {
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(value))
+}
+
+function getCrowdColor(intensity: number) {
+  const value = Math.min(1, Math.max(0, intensity / 100))
+  const upperIndex = CROWD_COLOR_STOPS.findIndex((stop) => value <= stop.value)
+  const upper = CROWD_COLOR_STOPS[Math.max(1, upperIndex)]
+  const lower = CROWD_COLOR_STOPS[Math.max(0, upperIndex - 1)]
   const amount = (value - lower.value) / (upper.value - lower.value)
   const color = lower.color.map((channel, index) =>
     Math.round(channel + (upper.color[index] - channel) * amount),
@@ -69,21 +206,8 @@ function getPressureColor(pressure: number) {
   return color.join(', ')
 }
 
-function SensoryPressureHeatmap({
-  dynamicPressureActive = false,
-  forecastSlotIndex = null,
-}: {
-  dynamicPressureActive?: boolean
-  forecastSlotIndex?: number | null
-}) {
+function LiveCrowdHeatmap({ points }: { points: LiveCrowdPoint[] }) {
   const map = useMap()
-  const forecastSlotRef = useRef<number | null>(forecastSlotIndex)
-  const schedulePaintRef = useRef<() => void>(() => undefined)
-
-  useEffect(() => {
-    forecastSlotRef.current = forecastSlotIndex
-    schedulePaintRef.current()
-  }, [forecastSlotIndex])
 
   useEffect(() => {
     if (!map) return
@@ -93,7 +217,6 @@ function SensoryPressureHeatmap({
     let frame = 0
     let lastPaint = 0
     let resizeObserver: ResizeObserver | null = null
-    const displayedPressures = new Map<string, number>()
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
 
     const paint = (timestamp: number) => {
@@ -113,6 +236,12 @@ function SensoryPressureHeatmap({
       const mapElement = map.getDiv()
       const width = mapElement.clientWidth
       const height = mapElement.clientHeight
+      const mapBounds = mapElement.getBoundingClientRect()
+      const paneBounds = canvas.parentElement?.getBoundingClientRect()
+      if (paneBounds) {
+        canvas.style.left = `${mapBounds.left - paneBounds.left}px`
+        canvas.style.top = `${mapBounds.top - paneBounds.top}px`
+      }
       const pixelRatio = Math.min(window.devicePixelRatio || 1, 2)
       const canvasWidth = Math.round(width * pixelRatio)
       const canvasHeight = Math.round(height * pixelRatio)
@@ -133,28 +262,20 @@ function SensoryPressureHeatmap({
         ? 0.5 - 0.5 * Math.cos((timestamp / PULSE_DURATION) * Math.PI * 2)
         : 0
 
-      for (const point of [...SENSORY_PRESSURE_POINTS].sort(
-        (first, second) => first.pressure - second.pressure,
+      for (const point of [...points].sort(
+        (first, second) => first.intensity - second.intensity,
       )) {
-        const targetPressure = forecastSlotRef.current === null
-          ? point.pressure
-          : getForecastPressure(point, forecastSlotRef.current)
-        const previousPressure = displayedPressures.get(point.id) ?? targetPressure
-        const pressure = shouldPulse
-          ? previousPressure + (targetPressure - previousPressure) * 0.09
-          : targetPressure
-        displayedPressures.set(point.id, pressure)
-        const [lng, lat] = point.coordinates
+        const intensity = point.intensity
         const pixel = projection.fromLatLngToContainerPixel(
-          new google.maps.LatLng(lat, lng),
+          new google.maps.LatLng(point.latitude, point.longitude),
         )
         if (!pixel) continue
 
         const pulseStrength = Math.max(
           0,
-          (pressure - PULSE_THRESHOLD) / (100 - PULSE_THRESHOLD),
+          (intensity - PULSE_THRESHOLD) / (100 - PULSE_THRESHOLD),
         )
-        const radius = 74 + pressure * 0.36 + pulse * pulseStrength * 12
+        const radius = 36 + intensity * 0.3 + pulse * pulseStrength * 8
 
         if (
           pixel.x < -radius ||
@@ -163,10 +284,10 @@ function SensoryPressureHeatmap({
           pixel.y > height + radius
         ) continue
 
-        const color = getPressureColor(pressure)
+        const color = getCrowdColor(intensity)
         const centreAlpha =
           0.14 +
-          (pressure / 100) * 0.13 +
+          (intensity / 100) * 0.13 +
           pulse * pulseStrength * 0.045
         const gradient = context.createRadialGradient(
           pixel.x,
@@ -188,7 +309,7 @@ function SensoryPressureHeatmap({
           radius * 2,
         )
 
-        if (pressure >= PULSE_THRESHOLD) {
+        if (intensity >= PULSE_THRESHOLD) {
           const coreRadius = radius * 0.52
           const coreAlpha = 0.08 + pulseStrength * 0.08 + pulse * 0.025
           const coreGradient = context.createRadialGradient(
@@ -212,47 +333,17 @@ function SensoryPressureHeatmap({
         }
       }
 
-      if (dynamicPressureActive) {
-        const eventPixel = projection.fromLatLngToContainerPixel(
-          new google.maps.LatLng(-37.8115, 144.966),
-        )
-        if (eventPixel) {
-          const radius = 118 + pulse * 34
-          const eventGradient = context.createRadialGradient(
-            eventPixel.x,
-            eventPixel.y,
-            0,
-            eventPixel.x,
-            eventPixel.y,
-            radius,
-          )
-          eventGradient.addColorStop(0, `rgba(172, 20, 31, ${0.52 + pulse * 0.1})`)
-          eventGradient.addColorStop(0.28, `rgba(210, 42, 49, ${0.34 + pulse * 0.08})`)
-          eventGradient.addColorStop(0.66, 'rgba(239, 112, 64, 0.15)')
-          eventGradient.addColorStop(1, 'rgba(239, 112, 64, 0)')
-          context.fillStyle = eventGradient
-          context.fillRect(
-            eventPixel.x - radius,
-            eventPixel.y - radius,
-            radius * 2,
-            radius * 2,
-          )
-        }
-      }
-
       if (shouldPulse) frame = window.requestAnimationFrame(paint)
     }
 
     const schedulePaint = () => {
       if (!frame) frame = window.requestAnimationFrame(paint)
     }
-    schedulePaintRef.current = schedulePaint
-
     overlay.onAdd = () => {
       canvas = document.createElement('canvas')
       canvas.className = 'sensory-pressure-canvas'
       canvas.setAttribute('aria-hidden', 'true')
-      map.getDiv().appendChild(canvas)
+      overlay.getPanes()?.overlayLayer.appendChild(canvas)
       resizeObserver = new ResizeObserver(schedulePaint)
       resizeObserver.observe(map.getDiv())
       reducedMotion.addEventListener('change', schedulePaint)
@@ -269,14 +360,13 @@ function SensoryPressureHeatmap({
       frame = 0
       canvas?.remove()
       canvas = null
-      schedulePaintRef.current = () => undefined
     }
     overlay.setMap(map)
 
     return () => {
       overlay.setMap(null)
     }
-  }, [dynamicPressureActive, map])
+  }, [map, points])
 
   return null
 }
@@ -736,7 +826,11 @@ function MapContent({
   quietFinderOpen,
   selectedQuietSpaceId,
   quietSpaceDestination,
-  forecastSlotIndex,
+  crowdPoints,
+  pedestrianSensors,
+  crowdLayerMode,
+  selectedPedestrianSensorId,
+  onPedestrianSensorSelect,
   routeSheetState,
   onQuietSpaceSelect,
   onQuietSpaceConfirm,
@@ -744,6 +838,32 @@ function MapContent({
 }: MapViewProps) {
   const map = useMap()
   const [userPosition, setUserPosition] = useState<{ lat: number; lng: number } | null>(null)
+  const sensorCloseTimerRef = useRef<number | null>(null)
+  const readingsBySensor = useMemo(
+    () => new Map(crowdPoints.map((point) => [point.sensorId, point])),
+    [crowdPoints],
+  )
+  const selectedSensor = pedestrianSensors.find(
+    (sensor) => sensor.sensorId === selectedPedestrianSensorId,
+  ) ?? null
+  const selectedReading = selectedPedestrianSensorId === null
+    ? null
+    : readingsBySensor.get(selectedPedestrianSensorId) ?? null
+
+  function cancelSensorClose() {
+    if (sensorCloseTimerRef.current !== null) {
+      window.clearTimeout(sensorCloseTimerRef.current)
+      sensorCloseTimerRef.current = null
+    }
+  }
+
+  function scheduleSensorClose() {
+    cancelSensorClose()
+    sensorCloseTimerRef.current = window.setTimeout(() => {
+      onPedestrianSensorSelect(null)
+      sensorCloseTimerRef.current = null
+    }, 220)
+  }
 
   useEffect(() => {
     if (!map || zoomRequest.id === 0) return
@@ -774,12 +894,92 @@ function MapContent({
     )
   }, [locateRequest, map, onLocationStatus])
 
+  useEffect(() => () => cancelSensorClose(), [])
+
   return (
     <>
-      <SensoryPressureHeatmap
-        dynamicPressureActive={navigationActive && reroutePreviewVisible}
-        forecastSlotIndex={forecastSlotIndex}
-      />
+      {crowdLayerMode !== 'sensors' ? (
+        <LiveCrowdHeatmap points={crowdPoints} />
+      ) : null}
+
+      {crowdLayerMode !== 'heatmap'
+        ? pedestrianSensors.map((sensor) => {
+            const reading = readingsBySensor.get(sensor.sensorId)
+            const level = reading?.crowdLevel ?? 'unavailable'
+            const selected = sensor.sensorId === selectedPedestrianSensorId
+
+            return (
+              <AdvancedMarker
+                key={sensor.sensorId}
+                position={{ lat: sensor.latitude, lng: sensor.longitude }}
+                title={`${sensor.name}. ${reading ? `${reading.pedestriansPerMinute} pedestrians per minute` : 'Current reading unavailable'}`}
+                zIndex={selected ? 100 : reading ? 20 : 5}
+                collisionBehavior={google.maps.CollisionBehavior.OPTIONAL_AND_HIDES_LOWER_PRIORITY}
+                onClick={() => {
+                  cancelSensorClose()
+                  onPedestrianSensorSelect(sensor.sensorId)
+                }}
+              >
+                <div
+                  className={`pedestrian-sensor-marker pedestrian-sensor-marker--${level}${selected ? ' pedestrian-sensor-marker--selected' : ''}`}
+                  aria-hidden="true"
+                >
+                  <span>{reading?.pedestriansPerMinute ?? '·'}</span>
+                </div>
+              </AdvancedMarker>
+            )
+          })
+        : null}
+
+      {crowdLayerMode !== 'heatmap' && selectedSensor ? (
+        <InfoWindow
+          position={{ lat: selectedSensor.latitude, lng: selectedSensor.longitude }}
+          onCloseClick={() => onPedestrianSensorSelect(null)}
+          headerDisabled
+          pixelOffset={[0, -30]}
+        >
+          <article
+            className="pedestrian-sensor-card"
+            onPointerEnter={cancelSensorClose}
+            onPointerLeave={scheduleSensorClose}
+          >
+            <header className="pedestrian-sensor-card__header">
+              <h2>{selectedSensor.name}</h2>
+              <button
+                type="button"
+                aria-label="Close sensor details"
+                onClick={() => onPedestrianSensorSelect(null)}
+              >
+                <X aria-hidden="true" size={18} />
+              </button>
+            </header>
+            {selectedReading ? (
+              <div className="pedestrian-sensor-card__reading">
+                <strong>{selectedReading.pedestriansPerMinute}</strong>
+                <div>
+                  <span>pedestrians per minute</span>
+                  <small>Updated {formatReadingTime(selectedReading.measuredAt)}</small>
+                </div>
+              </div>
+            ) : (
+              <div className="pedestrian-sensor-card__reading pedestrian-sensor-card__reading--unavailable">
+                <strong>—</strong>
+                <div>
+                  <span>Current count unavailable</span>
+                  <small>Stored sensor position</small>
+                </div>
+              </div>
+            )}
+            <section className="pedestrian-sensor-card__summary">
+              <strong>Google Maps</strong>
+              <DynamicPlaceSummary
+                key={selectedSensor.sensorId}
+                sensor={selectedSensor}
+              />
+            </section>
+          </article>
+        </InfoWindow>
+      ) : null}
 
       {routePlanningActive ? (
         <DemoRouteOverlay
