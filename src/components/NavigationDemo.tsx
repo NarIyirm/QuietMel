@@ -2,7 +2,6 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import {
   ArrowUpRight,
   Clock3,
-  Leaf,
   MapPin,
   Navigation,
   Octagon,
@@ -16,14 +15,10 @@ import {
   DEMO_ROUTES,
   type NavigationRouteId,
 } from '../data/demoRoutes'
-import type { QuietSpace } from '../data/quietSpaces'
 
 type NavigationDemoProps = {
   routeId: NavigationRouteId
   reroutePromptVisible: boolean
-  quietFinderOpen: boolean
-  quietSpaceDestination: QuietSpace | null
-  onToggleQuietFinder: () => void
   onSwitchRoute: () => void
   onKeepRoute: () => void
   onEndNavigation: () => void
@@ -32,9 +27,6 @@ type NavigationDemoProps = {
 export function NavigationDemo({
   routeId,
   reroutePromptVisible,
-  quietFinderOpen,
-  quietSpaceDestination,
-  onToggleQuietFinder,
   onSwitchRoute,
   onKeepRoute,
   onEndNavigation,
@@ -45,8 +37,6 @@ export function NavigationDemo({
     ? DEMO_REROUTE
     : DEMO_ROUTES.find((candidate) => candidate.id === routeId) ?? DEMO_ROUTES[0]
   const rerouted = routeId === 'reroute'
-  const tripMinutes = quietSpaceDestination?.walkingMinutes ?? route.durationMinutes
-  const tripDistance = quietSpaceDestination?.distance ?? `${route.distanceKm} km`
 
   useEffect(() => {
     if (reroutePromptVisible) dialogRef.current?.focus()
@@ -54,16 +44,16 @@ export function NavigationDemo({
 
   return (
     <>
-      {!reroutePromptVisible && !quietFinderOpen ? (
+      {!reroutePromptVisible ? (
         <>
           <section className="navigation-instruction" aria-live="polite" aria-label="Next navigation instruction">
             <span className="navigation-instruction__turn" aria-hidden="true">
               <ArrowUpRight />
             </span>
             <div>
-              <span>{quietSpaceDestination ? '80 m' : rerouted ? '180 m' : '120 m'}</span>
-              <h2>{quietSpaceDestination ? `Continue toward ${quietSpaceDestination.name}` : rerouted ? 'Continue onto Rathdowne Street' : 'Turn right onto Exhibition Street'}</h2>
-              <p>{quietSpaceDestination ? 'Follow the teal quiet-space route' : rerouted ? 'Stay on the quieter eastern side' : 'Then continue for 600 m'}</p>
+              <span>{rerouted ? '180 m' : '120 m'}</span>
+              <h2>{rerouted ? 'Continue onto Rathdowne Street' : 'Turn right onto Exhibition Street'}</h2>
+              <p>{rerouted ? 'Stay on the quieter eastern side' : 'Then continue for 600 m'}</p>
             </div>
             <button
               type="button"
@@ -77,13 +67,13 @@ export function NavigationDemo({
 
           <section className="navigation-trip-bar" aria-label="Current trip summary">
             <div className="navigation-trip-bar__eta">
-              <strong>{quietSpaceDestination ? '10:31' : rerouted ? '10:45' : '10:42'}</strong>
+              <strong>{rerouted ? '10:45' : '10:42'}</strong>
               <span>arrival</span>
             </div>
             <div className="navigation-trip-bar__metrics">
-              <span><Clock3 aria-hidden="true" /><strong>{tripMinutes}</strong> min</span>
-              <span><MapPin aria-hidden="true" /><strong>{tripDistance}</strong></span>
-              <span><ShieldCheck aria-hidden="true" />{quietSpaceDestination ? `Quiet ${quietSpaceDestination.quietScore}/100` : `Pressure ${route.sensoryScore}/100`}</span>
+              <span><Clock3 aria-hidden="true" /><strong>{route.durationMinutes}</strong> min</span>
+              <span><MapPin aria-hidden="true" /><strong>{route.distanceKm} km</strong></span>
+              <span><ShieldCheck aria-hidden="true" />Pressure {route.sensoryScore}/100</span>
             </div>
             <button type="button" className="navigation-trip-bar__end" onClick={onEndNavigation}>
               <Octagon aria-hidden="true" />
@@ -91,18 +81,6 @@ export function NavigationDemo({
             </button>
           </section>
         </>
-      ) : null}
-
-      {!reroutePromptVisible ? (
-        <button
-          type="button"
-          className={`quiet-finder-button${quietFinderOpen ? ' quiet-finder-button--active' : ''}`}
-          aria-pressed={quietFinderOpen}
-          onClick={onToggleQuietFinder}
-        >
-          <Leaf aria-hidden="true" />
-          <span>{quietFinderOpen ? 'Close quiet spaces' : 'Quiet Space Finder'}</span>
-        </button>
       ) : null}
 
       {reroutePromptVisible ? (

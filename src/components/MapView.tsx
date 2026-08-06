@@ -13,12 +13,12 @@ import {
   type DemoRouteId,
   type NavigationRouteId,
 } from '../data/demoRoutes'
-import { QUIET_SPACES, type QuietSpace } from '../data/quietSpaces'
 import type {
   CrowdLayerMode,
   LiveCrowdPoint,
   PedestrianSensor,
 } from '../lib/crowd'
+import { getPlaceCategory, type PlaceCategoryId } from '../lib/placeDiscovery'
 
 type ZoomRequest = {
   id: number
@@ -34,17 +34,13 @@ type MapViewProps = {
   navigationActive: boolean
   navigationRouteId: NavigationRouteId
   reroutePreviewVisible: boolean
-  quietFinderOpen: boolean
-  selectedQuietSpaceId: string
-  quietSpaceDestination: QuietSpace | null
+  activePlaceCategory: PlaceCategoryId | null
   crowdPoints: LiveCrowdPoint[]
   pedestrianSensors: PedestrianSensor[]
   crowdLayerMode: CrowdLayerMode
   selectedPedestrianSensorId: number | null
   onPedestrianSensorSelect: (sensorId: number | null) => void
   routeSheetState: 'collapsed' | 'medium' | 'expanded'
-  onQuietSpaceSelect: (spaceId: string) => void
-  onQuietSpaceConfirm: (spaceId: string) => void
   onLocationStatus: (message: string) => void
 }
 
@@ -191,6 +187,14 @@ function formatReadingTime(value: string) {
     hour: 'numeric',
     minute: '2-digit',
   }).format(new Date(value))
+}
+
+function formatBusinessStatus(value: string) {
+  if (value === 'OPERATIONAL') return 'Open for business'
+  if (value === 'CLOSED_TEMPORARILY') return 'Temporarily closed'
+  if (value === 'CLOSED_PERMANENTLY') return 'Permanently closed'
+  if (value === 'FUTURE_OPENING') return 'Opening in the future'
+  return value.toLocaleLowerCase().replaceAll('_', ' ')
 }
 
 function getCrowdColor(intensity: number) {
@@ -539,26 +543,19 @@ function DemoRouteOverlay({
 function NavigationMapOverlay({
   routeId,
   reroutePreviewVisible,
-  quietFinderOpen,
-  quietSpaceDestination,
 }: {
   routeId: NavigationRouteId
   reroutePreviewVisible: boolean
-  quietFinderOpen: boolean
-  quietSpaceDestination: QuietSpace | null
 }) {
   const map = useMap()
   const progress = useRef(0.035)
-  const baseRoute = routeId === 'reroute'
+  const route = routeId === 'reroute'
     ? DEMO_REROUTE
     : DEMO_ROUTES.find((candidate) => candidate.id === routeId) ?? DEMO_ROUTES[0]
-  const route = useMemo(() => quietSpaceDestination
-    ? { ...baseRoute, coordinates: quietSpaceDestination.routeCoordinates, color: '#087c78' }
-    : baseRoute, [baseRoute, quietSpaceDestination])
   const [navigationPosition, setNavigationPosition] = useState(route.coordinates[0])
 
   useEffect(() => {
-    if (!map || reroutePreviewVisible || quietFinderOpen) return
+    if (!map || reroutePreviewVisible) return
 
     const getRoutePosition = () => {
       const routeProgress = Math.min(progress.current, 0.88)
@@ -591,7 +588,7 @@ function NavigationMapOverlay({
     updatePosition()
     const timer = window.setInterval(updatePosition, 600)
     return () => window.clearInterval(timer)
-  }, [map, quietFinderOpen, reroutePreviewVisible, route])
+  }, [map, reroutePreviewVisible, route])
 
   useEffect(() => {
     if (!map || !reroutePreviewVisible) return
@@ -643,7 +640,6 @@ function NavigationMapOverlay({
       if (!context) return
       context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0)
       context.clearRect(0, 0, width, height)
-      if (quietFinderOpen) return
       context.lineCap = 'round'
       context.lineJoin = 'round'
 
@@ -714,7 +710,7 @@ function NavigationMapOverlay({
     visualOverlay.setMap(map)
 
     return () => visualOverlay.setMap(null)
-  }, [map, quietFinderOpen, reroutePreviewVisible, route, routeId])
+  }, [map, reroutePreviewVisible, route, routeId])
 
   useEffect(() => {
     if (!map) return
@@ -737,76 +733,265 @@ function NavigationMapOverlay({
   )
 }
 
-function QuietSpaceFinderOverlay({
-  active,
-  selectedSpaceId,
-  onSelect,
-  onConfirm,
+type PlaceRouteSummary = {
+  placeId: string
+  distance: string
+  duration: string
+}
+
+function PlaceDiscoveryOverlay({
+  categoryId,
+  userPosition,
+  onStatus,
 }: {
-  active: boolean
-  selectedSpaceId: string
-  onSelect: (spaceId: string) => void
-  onConfirm: (spaceId: string) => void
+  categoryId: PlaceCategoryId
+  userPosition: google.maps.LatLngLiteral | null
+  onStatus: (message: string) => void
 }) {
   const map = useMap()
-  const selectedSpace = QUIET_SPACES.find((space) => space.id === selectedSpaceId)
+  const [places, setPlaces] = useState<google.maps.places.Place[]>([])
+  const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null)
+  const [routingPlaceId, setRoutingPlaceId] = useState<string | null>(null)
+  const [routeSummary, setRouteSummary] = useState<PlaceRouteSummary | null>(null)
+  const searchSequence = useRef(0)
+  const routeSequence = useRef(0)
+  const routePolylines = useRef<google.maps.Polyline[]>([])
+  const selectedPlace = places.find((place) => place.id === selectedPlaceId) ?? null
+
+  function clearRoute() {
+    routeSequence.current += 1
+    for (const polyline of routePolylines.current) polyline.setMap(null)
+    routePolylines.current = []
+    setRouteSummary(null)
+    setRoutingPlaceId(null)
+  }
 
   useEffect(() => {
-    if (!map || !active) return
-    const bounds = new google.maps.LatLngBounds()
-    for (const space of QUIET_SPACES) bounds.extend(space.coordinates)
-    bounds.extend({ lat: -37.8112, lng: 144.967 })
-    map.moveCamera({ heading: 0, tilt: 0 })
-    const desktop = window.matchMedia('(min-width: 768px)').matches
-    map.fitBounds(bounds, desktop
-      ? { top: 120, right: 120, bottom: 130, left: 120 }
-      : { top: 150, right: 54, bottom: 190, left: 54 })
-  }, [active, map])
+    if (!map) return
 
-  if (!active) return null
+    const requestId = searchSequence.current + 1
+    searchSequence.current = requestId
+    const category = getPlaceCategory(categoryId)
+    const center = userPosition ?? map.getCenter()?.toJSON() ?? MELBOURNE_CENTRE
+
+    onStatus(`Searching Google Maps for nearby ${category.label.toLocaleLowerCase()}…`)
+
+    void google.maps.importLibrary('places').then(async ({ Place }) => {
+      const result = await Place.searchNearby({
+        fields: [
+          'id',
+          'displayName',
+          'location',
+          'primaryTypeDisplayName',
+        ],
+        includedTypes: [...category.googleTypes],
+        locationRestriction: { center, radius: 2_000 },
+        maxResultCount: 20,
+        rankPreference: 'DISTANCE',
+        language: 'en-AU',
+        region: 'AU',
+      })
+
+      if (searchSequence.current !== requestId) return
+      const nextPlaces = result.places.filter(
+        (place) => place.location && place.displayName,
+      )
+      setPlaces(nextPlaces)
+
+      if (!nextPlaces.length) {
+        onStatus(`No ${category.label.toLocaleLowerCase()} were found within 2 km.`)
+        return
+      }
+
+      const bounds = new google.maps.LatLngBounds()
+      bounds.extend(center)
+      for (const place of nextPlaces) {
+        if (place.location) bounds.extend(place.location)
+      }
+      map.moveCamera({ heading: 0, tilt: 0 })
+      const desktop = window.matchMedia('(min-width: 768px)').matches
+      map.fitBounds(
+        bounds,
+        desktop
+          ? { top: 120, right: 90, bottom: 100, left: 420 }
+          : { top: 190, right: 44, bottom: 150, left: 44 },
+      )
+      onStatus(`Showing ${nextPlaces.length} nearby ${category.label.toLocaleLowerCase()} from Google Maps.`)
+    }).catch(() => {
+      if (searchSequence.current === requestId) {
+        onStatus('Google Maps could not load nearby places. Check the Places API configuration.')
+      }
+    })
+
+    return () => {
+      searchSequence.current += 1
+      routeSequence.current += 1
+      for (const polyline of routePolylines.current) polyline.setMap(null)
+      routePolylines.current = []
+    }
+  }, [categoryId, map, onStatus, userPosition])
+
+  async function showWalkingRoute(place: google.maps.places.Place) {
+    if (!map || !place.location) return
+
+    const requestId = routeSequence.current + 1
+    routeSequence.current = requestId
+    for (const polyline of routePolylines.current) polyline.setMap(null)
+    routePolylines.current = []
+    setRouteSummary(null)
+    setRoutingPlaceId(place.id)
+    onStatus(`Calculating a walking route to ${place.displayName ?? 'this place'}…`)
+
+    try {
+      const { Route } = await google.maps.importLibrary('routes')
+      const origin = userPosition ?? map.getCenter()?.toJSON() ?? MELBOURNE_CENTRE
+      const result = await Route.computeRoutes({
+        origin,
+        destination: place,
+        travelMode: 'WALKING',
+        fields: ['path', 'distanceMeters', 'durationMillis', 'localizedValues', 'viewport'],
+        language: 'en-AU',
+        region: 'AU',
+        units: google.maps.UnitSystem.METRIC,
+      })
+
+      if (routeSequence.current !== requestId) return
+      const route = result.routes?.[0]
+      if (!route) throw new Error('No walking route returned')
+
+      const polylines = route.createPolylines({
+        polylineOptions: {
+          strokeColor: '#087c78',
+          strokeOpacity: 0.94,
+          strokeWeight: 7,
+          zIndex: 30,
+        },
+      })
+      for (const polyline of polylines) polyline.setMap(map)
+      routePolylines.current = polylines
+
+      if (route.viewport) {
+        const desktop = window.matchMedia('(min-width: 768px)').matches
+        map.fitBounds(
+          route.viewport,
+          desktop
+            ? { top: 120, right: 90, bottom: 100, left: 420 }
+            : { top: 190, right: 44, bottom: 220, left: 44 },
+        )
+      }
+
+      const distance = route.localizedValues?.distance
+        ?? `${Math.round((route.distanceMeters ?? 0) / 10) / 100} km`
+      const duration = route.localizedValues?.duration
+        ?? `${Math.max(1, Math.round((route.durationMillis ?? 0) / 60_000))} min`
+      setRouteSummary({ placeId: place.id, distance, duration })
+      setRoutingPlaceId(null)
+      onStatus(`Walking route ready: ${duration}, ${distance}.`)
+    } catch {
+      if (routeSequence.current !== requestId) return
+      setRoutingPlaceId(null)
+      onStatus('Google Maps could not calculate a walking route. Check the Routes API configuration.')
+    }
+  }
+
+  async function selectPlace(place: google.maps.places.Place) {
+    setSelectedPlaceId(place.id)
+    if (place.formattedAddress !== undefined) return
+
+    try {
+      await place.fetchFields({
+        fields: [
+          'formattedAddress',
+          'businessStatus',
+          'rating',
+          'userRatingCount',
+          'googleMapsURI',
+        ],
+      })
+      setPlaces((current) => [...current])
+    } catch {
+      onStatus('Some Google Maps place details are unavailable.')
+    }
+  }
 
   return (
     <>
-      {QUIET_SPACES.map((space) => (
-        <AdvancedMarker
-          key={space.id}
-          position={space.coordinates}
-          title={space.name}
-          zIndex={space.id === selectedSpaceId ? 18 : 14}
-          onClick={() => onSelect(space.id)}
-        >
-          <div
-            className={`quiet-space-marker${space.id === selectedSpaceId ? ' quiet-space-marker--selected' : ''}`}
-            aria-label={`${space.name}, ${space.density.toLowerCase()} density`}
+      {places.map((place) => {
+        if (!place.location) return null
+        const selected = place.id === selectedPlaceId
+        return (
+          <AdvancedMarker
+            key={place.id}
+            position={place.location}
+            title={place.displayName ?? 'Google Maps place'}
+            zIndex={selected ? 80 : 40}
+            onClick={() => void selectPlace(place)}
           >
-            <span aria-hidden="true">Q</span>
-          </div>
-        </AdvancedMarker>
-      ))}
+            <div
+              className={`place-result-marker${selected ? ' place-result-marker--selected' : ''}`}
+              aria-label={place.displayName ?? 'Google Maps place'}
+            >
+              <span aria-hidden="true" />
+            </div>
+          </AdvancedMarker>
+        )
+      })}
 
-      {selectedSpace ? (
+      {selectedPlace?.location ? (
         <InfoWindow
-          position={selectedSpace.coordinates}
-          onCloseClick={() => onSelect('')}
+          position={selectedPlace.location}
+          onCloseClick={() => setSelectedPlaceId(null)}
           headerDisabled
-          disableAutoPan
+          pixelOffset={[0, -32]}
         >
-          <article className="quiet-space-info">
-            <span className="quiet-space-info__type">{selectedSpace.type}</span>
-            <h2>{selectedSpace.name}</h2>
-            <div className="quiet-space-info__metrics">
-              <strong>{selectedSpace.distance}</strong>
-              <span>Quiet {selectedSpace.quietScore}/100</span>
+          <article className="place-result-card">
+            <header>
+              <div>
+                <span>{selectedPlace.primaryTypeDisplayName ?? 'Place'}</span>
+                <h2>{selectedPlace.displayName}</h2>
+              </div>
+              <button
+                type="button"
+                aria-label="Close place details"
+                onClick={() => setSelectedPlaceId(null)}
+              >
+                <X aria-hidden="true" size={17} />
+              </button>
+            </header>
+            {selectedPlace.formattedAddress ? <p>{selectedPlace.formattedAddress}</p> : null}
+            <div className="place-result-card__facts">
+              {selectedPlace.rating ? (
+                <span>
+                  <strong>{selectedPlace.rating.toFixed(1)}</strong>
+                  Google rating
+                  {selectedPlace.userRatingCount ? ` · ${selectedPlace.userRatingCount.toLocaleString('en-AU')} reviews` : ''}
+                </span>
+              ) : null}
+              {selectedPlace.businessStatus ? (
+                <span>{formatBusinessStatus(selectedPlace.businessStatus)}</span>
+              ) : null}
+              {routeSummary?.placeId === selectedPlace.id ? (
+                <span><strong>{routeSummary.duration}</strong> · {routeSummary.distance} walking</span>
+              ) : null}
             </div>
-            <div className="quiet-space-info__density">
-              <span>Current density</span>
-              <strong>{selectedSpace.density} · {selectedSpace.densityPercent}%</strong>
+            <div className="place-result-card__actions">
+              <button
+                type="button"
+                disabled={routingPlaceId === selectedPlace.id}
+                onClick={() => void showWalkingRoute(selectedPlace)}
+              >
+                {routingPlaceId === selectedPlace.id ? 'Calculating…' : 'Show walking route'}
+              </button>
+              {routeSummary?.placeId === selectedPlace.id ? (
+                <button type="button" onClick={clearRoute}>Clear route</button>
+              ) : null}
+              {selectedPlace.googleMapsURI ? (
+                <a href={selectedPlace.googleMapsURI} target="_blank" rel="noreferrer">
+                  View on Google Maps
+                  <ExternalLink aria-hidden="true" size={13} />
+                </a>
+              ) : null}
             </div>
-            <p>{selectedSpace.description}</p>
-            <button type="button" onClick={() => onConfirm(selectedSpace.id)}>
-              Navigate here · {selectedSpace.walkingMinutes} min
-            </button>
-            <small>Demo live estimate</small>
           </article>
         </InfoWindow>
       ) : null}
@@ -823,17 +1008,13 @@ function MapContent({
   navigationActive,
   navigationRouteId,
   reroutePreviewVisible,
-  quietFinderOpen,
-  selectedQuietSpaceId,
-  quietSpaceDestination,
+  activePlaceCategory,
   crowdPoints,
   pedestrianSensors,
   crowdLayerMode,
   selectedPedestrianSensorId,
   onPedestrianSensorSelect,
   routeSheetState,
-  onQuietSpaceSelect,
-  onQuietSpaceConfirm,
   onLocationStatus,
 }: MapViewProps) {
   const map = useMap()
@@ -898,11 +1079,11 @@ function MapContent({
 
   return (
     <>
-      {crowdLayerMode !== 'sensors' ? (
+      {!activePlaceCategory && crowdLayerMode !== 'sensors' ? (
         <LiveCrowdHeatmap points={crowdPoints} />
       ) : null}
 
-      {crowdLayerMode !== 'heatmap'
+      {!activePlaceCategory && crowdLayerMode !== 'heatmap'
         ? pedestrianSensors.map((sensor) => {
             const reading = readingsBySensor.get(sensor.sensorId)
             const level = reading?.crowdLevel ?? 'unavailable'
@@ -931,7 +1112,7 @@ function MapContent({
           })
         : null}
 
-      {crowdLayerMode !== 'heatmap' && selectedSensor ? (
+      {!activePlaceCategory && crowdLayerMode !== 'heatmap' && selectedSensor ? (
         <InfoWindow
           position={{ lat: selectedSensor.latitude, lng: selectedSensor.longitude }}
           onCloseClick={() => onPedestrianSensorSelect(null)}
@@ -993,17 +1174,15 @@ function MapContent({
         <NavigationMapOverlay
           routeId={navigationRouteId}
           reroutePreviewVisible={reroutePreviewVisible}
-          quietFinderOpen={quietFinderOpen}
-          quietSpaceDestination={quietSpaceDestination}
         />
       ) : null}
 
-      {navigationActive ? (
-        <QuietSpaceFinderOverlay
-          active={quietFinderOpen}
-          selectedSpaceId={selectedQuietSpaceId}
-          onSelect={onQuietSpaceSelect}
-          onConfirm={onQuietSpaceConfirm}
+      {activePlaceCategory ? (
+        <PlaceDiscoveryOverlay
+          key={`${activePlaceCategory}:${userPosition?.lat ?? 'map'}:${userPosition?.lng ?? 'centre'}`}
+          categoryId={activePlaceCategory}
+          userPosition={userPosition}
+          onStatus={onLocationStatus}
         />
       ) : null}
 

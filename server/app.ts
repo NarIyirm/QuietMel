@@ -5,6 +5,7 @@ import { env } from './config/env.js'
 import { authRouter } from './routes/auth.js'
 import { crowdRouter } from './routes/crowd.js'
 import { healthRouter } from './routes/health.js'
+import { preferencesRouter } from './routes/preferences.js'
 
 const app = express()
 
@@ -28,6 +29,7 @@ app.use(express.json({ limit: '100kb' }))
 app.use('/api/health', healthRouter)
 app.use('/api/auth', authRouter)
 app.use('/api/crowd', crowdRouter)
+app.use('/api/preferences', preferencesRouter)
 
 app.use((_request, response) => {
   response.status(404).json({ error: 'not_found' })

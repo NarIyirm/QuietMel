@@ -1,11 +1,12 @@
-import { lazy, Suspense, type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Armchair,
+  BookOpen,
   Bookmark,
   Clock3,
   Coffee,
   Leaf,
   Library,
+  Landmark,
   LogIn,
   LogOut,
   MapPin,
@@ -14,14 +15,17 @@ import {
   Mic,
   Minus,
   Navigation,
+  Palette,
   Plus,
   Search,
   Settings,
+  SlidersHorizontal,
   Trees,
   UserRound,
   UserPlus,
   UsersRound,
   Waves,
+  X,
   type LucideIcon,
 } from 'lucide-react'
 import { AuthPanel } from './components/AuthPanel'
@@ -32,10 +36,20 @@ import { RoutePlanner, type RouteSheetState } from './components/RoutePlanner'
 import { NavigationDemo } from './components/NavigationDemo'
 import { type DemoRouteId, type NavigationRouteId } from './data/demoRoutes'
 import { PLACES } from './data/places'
-import { QUIET_SPACES } from './data/quietSpaces'
 import { useLiveCrowd } from './hooks/useLiveCrowd'
 import { usePedestrianSensors } from './hooks/usePedestrianSensors'
 import type { CrowdLayerMode, PedestrianSensor } from './lib/crowd'
+import {
+  loadCloudMapPreferences,
+  readLocalMapPreferences,
+  saveCloudMapPreferences,
+  saveLocalMapPreferences,
+} from './lib/mapPreferences'
+import {
+  DEFAULT_PLACE_CATEGORY_IDS,
+  PLACE_CATEGORIES,
+  type PlaceCategoryId,
+} from './lib/placeDiscovery'
 import {
   clearStoredAuth,
   getUserInitial,
@@ -48,15 +62,19 @@ import './styles/app.css'
 
 const MapView = lazy(() => import('./components/MapView'))
 
-type CategoryId = 'parks' | 'libraries' | 'cafes' | 'low-crowds' | 'rest-areas'
-
-const CATEGORIES: { id: CategoryId; label: string; icon: LucideIcon }[] = [
-  { id: 'parks', label: 'Parks', icon: Trees },
-  { id: 'libraries', label: 'Libraries', icon: Library },
-  { id: 'cafes', label: 'Cafés', icon: Coffee },
-  { id: 'low-crowds', label: 'Low crowds', icon: UsersRound },
-  { id: 'rest-areas', label: 'Rest areas', icon: Armchair },
-]
+const CATEGORY_ICONS: Record<PlaceCategoryId, LucideIcon> = {
+  parks: Trees,
+  libraries: Library,
+  cafes: Coffee,
+  gardens: Leaf,
+  museums: Landmark,
+  'art-galleries': Palette,
+  bookshops: BookOpen,
+  'community-centres': UsersRound,
+  'picnic-areas': Trees,
+  'visitor-centres': MapPinned,
+  'places-of-worship': Landmark,
+}
 
 function BrandMark({ compact = false }: { compact?: boolean }) {
   return (
@@ -138,33 +156,162 @@ function SearchField({ id, query, onQueryChange, onSearch }: SearchFieldProps) {
 }
 
 type CategoryBarProps = {
-  activeCategory: CategoryId | null
-  onCategoryChange: (category: CategoryId | null) => void
+  activeCategory: PlaceCategoryId | null
+  visibleCategories: PlaceCategoryId[]
+  preferenceStatus: 'idle' | 'saving' | 'saved' | 'error'
+  onCategoryChange: (category: PlaceCategoryId) => void
+  onExitPlaceMode: () => void
+  onVisibleCategoriesChange: (categories: PlaceCategoryId[]) => void
   className: string
 }
 
-function CategoryBar({ activeCategory, onCategoryChange, className }: CategoryBarProps) {
+function CategoryBar({
+  activeCategory,
+  visibleCategories,
+  preferenceStatus,
+  onCategoryChange,
+  onExitPlaceMode,
+  onVisibleCategoriesChange,
+  className,
+}: CategoryBarProps) {
+  const [draftCategories, setDraftCategories] = useState<PlaceCategoryId[]>(visibleCategories)
+  const filterRef = useRef<HTMLDetailsElement>(null)
+  const draftCategorySet = new Set(draftCategories)
+  const hasPendingChanges =
+    draftCategories.length !== visibleCategories.length ||
+    draftCategories.some((category, index) => category !== visibleCategories[index])
+
+  function toggleDraftCategory(categoryId: PlaceCategoryId) {
+    if (draftCategorySet.has(categoryId)) {
+      if (draftCategories.length === 1) return
+      setDraftCategories(draftCategories.filter((id) => id !== categoryId))
+      return
+    }
+
+    const selected = new Set([...draftCategories, categoryId])
+    setDraftCategories(
+      PLACE_CATEGORIES.flatMap((category) =>
+        selected.has(category.id) ? [category.id] : [],
+      ),
+    )
+  }
+
+  function saveDraftCategories() {
+    if (!hasPendingChanges) return
+    onVisibleCategoriesChange(draftCategories)
+    filterRef.current?.removeAttribute('open')
+  }
+
   return (
-    <div className={className} aria-label="Explore categories">
-      {CATEGORIES.map(({ id, label, icon: Icon }) => (
+    <div className={`${className} category-toolbar`}>
+      <div className="category-toolbar__scroller" aria-label="Explore place categories">
+        {visibleCategories.map((categoryId) => {
+          const category = PLACE_CATEGORIES.find((candidate) => candidate.id === categoryId)
+          if (!category) return null
+          const Icon = CATEGORY_ICONS[category.id]
+
+          return (
+            <button
+              key={category.id}
+              type="button"
+              className="map-category"
+              aria-pressed={activeCategory === category.id}
+              onClick={() => onCategoryChange(category.id)}
+            >
+              <Icon aria-hidden="true" size={19} strokeWidth={2} />
+              <span>{category.label}</span>
+            </button>
+          )
+        })}
+      </div>
+
+      {activeCategory ? (
         <button
-          key={id}
           type="button"
-          className="map-category"
-          aria-pressed={activeCategory === id}
-          onClick={() => onCategoryChange(activeCategory === id ? null : id)}
+          className="category-mode-exit"
+          aria-label="Exit place search and return to the crowd map"
+          onClick={onExitPlaceMode}
         >
-          <Icon aria-hidden="true" size={19} strokeWidth={2} />
-          <span>{label}</span>
+          <X aria-hidden="true" size={19} />
+          <span>Back to crowd map</span>
         </button>
-      ))}
+      ) : (
+        <details
+          ref={filterRef}
+          className="category-filter"
+          onToggle={(event) => {
+            if (event.currentTarget.open) setDraftCategories(visibleCategories)
+          }}
+        >
+          <summary aria-label="Choose quick place categories">
+            <SlidersHorizontal aria-hidden="true" size={19} />
+            <span className="category-filter__summary-label">Filter</span>
+          </summary>
+          <section className="category-filter__menu" aria-label="Quick place categories">
+            <header>
+              <strong>Quick scenes</strong>
+              <span>Choose which buttons appear on the map.</span>
+            </header>
+            <div className="category-filter__options">
+              {PLACE_CATEGORIES.map((category) => {
+                const checked = draftCategorySet.has(category.id)
+                return (
+                  <label key={category.id}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={checked && draftCategories.length === 1}
+                      onChange={() => toggleDraftCategory(category.id)}
+                    />
+                    <span>{category.label}</span>
+                  </label>
+                )
+              })}
+            </div>
+            <footer>
+              <button
+                type="button"
+                onClick={() => setDraftCategories([...DEFAULT_PLACE_CATEGORY_IDS])}
+              >
+                Restore defaults
+              </button>
+              <div className="category-filter__commit">
+                <span role="status">
+                  {preferenceStatus === 'saving'
+                    ? 'Saving…'
+                    : preferenceStatus === 'saved'
+                      ? 'Saved'
+                      : preferenceStatus === 'error'
+                        ? 'Saved on this device'
+                        : ''}
+                </span>
+                <button
+                  type="button"
+                  className="category-filter__save"
+                  disabled={!hasPendingChanges}
+                  onClick={saveDraftCategories}
+                >
+                  Save changes
+                </button>
+              </div>
+            </footer>
+          </section>
+        </details>
+      )}
     </div>
   )
 }
 
 function App() {
   const [query, setQuery] = useState('')
-  const [activeCategory, setActiveCategory] = useState<CategoryId | null>(null)
+  const [activeCategory, setActiveCategory] = useState<PlaceCategoryId | null>(null)
+  const [visibleCategories, setVisibleCategories] = useState<PlaceCategoryId[]>(
+    () => readLocalMapPreferences().quickPlaceCategories,
+  )
+  const [preferenceStatus, setPreferenceStatus] = useState<
+    'idle' | 'saving' | 'saved' | 'error'
+  >('idle')
+  const preferenceSaveSequence = useRef(0)
   const [selectedPlaceId, setSelectedPlaceId] = useState(PLACES[0].id)
   const [locateRequest, setLocateRequest] = useState(0)
   const [crowdLayerMode, setCrowdLayerMode] = useState<CrowdLayerMode>('heatmap')
@@ -178,9 +325,6 @@ function App() {
   const [navigationRouteId, setNavigationRouteId] = useState<NavigationRouteId>('quietest')
   const [reroutePromptVisible, setReroutePromptVisible] = useState(false)
   const [rerouteHandled, setRerouteHandled] = useState(false)
-  const [quietFinderOpen, setQuietFinderOpen] = useState(false)
-  const [selectedQuietSpaceId, setSelectedQuietSpaceId] = useState(QUIET_SPACES[0].id)
-  const [quietSpaceDestinationId, setQuietSpaceDestinationId] = useState<string | null>(null)
   const [routeSheetState, setRouteSheetState] = useState<RouteSheetState>('medium')
   const [authPanelOpen, setAuthPanelOpen] = useState(false)
   const [authPanelMode, setAuthPanelMode] = useState<'login' | 'register'>('login')
@@ -207,6 +351,52 @@ function App() {
     }
   }, [])
 
+  useEffect(() => {
+    let active = true
+    const localPreferences = readLocalMapPreferences()
+
+    if (!authState) {
+      return () => {
+        active = false
+      }
+    }
+
+    void loadCloudMapPreferences(authState.session.accessToken)
+      .then(async (cloudPreferences) => {
+        if (!active) return
+
+        if (cloudPreferences.source === 'stored') {
+          setVisibleCategories(cloudPreferences.quickPlaceCategories)
+          saveLocalMapPreferences(cloudPreferences.quickPlaceCategories, true)
+          setPreferenceStatus('saved')
+          return
+        }
+
+        if (localPreferences.customized) {
+          const saved = await saveCloudMapPreferences(
+            authState.session.accessToken,
+            localPreferences.quickPlaceCategories,
+          )
+          if (!active) return
+          setVisibleCategories(saved)
+          saveLocalMapPreferences(saved, true)
+        } else {
+          setVisibleCategories(cloudPreferences.quickPlaceCategories)
+          saveLocalMapPreferences(cloudPreferences.quickPlaceCategories, false)
+        }
+        setPreferenceStatus('saved')
+      })
+      .catch(() => {
+        if (!active) return
+        setVisibleCategories(localPreferences.quickPlaceCategories)
+        setPreferenceStatus('error')
+      })
+
+    return () => {
+      active = false
+    }
+  }, [authState])
+
   const visiblePlaces = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase()
 
@@ -217,20 +407,14 @@ function App() {
         place.categoryLabel.toLocaleLowerCase().includes(normalizedQuery)
 
       if (!matchesQuery) return false
-      if (activeCategory === 'parks') return place.category === 'park'
-      if (activeCategory === 'libraries') return place.category === 'library'
-      if (activeCategory === 'low-crowds') return place.quietScore >= 85
       return true
     })
-  }, [activeCategory, query])
+  }, [query])
 
   const selectedPlace =
     visiblePlaces.find((place) => place.id === selectedPlaceId) ??
     visiblePlaces[0] ??
     PLACES[0]
-  const quietSpaceDestination = QUIET_SPACES.find(
-    (space) => space.id === quietSpaceDestinationId,
-  ) ?? null
   const userInitial = getUserInitial(authState?.user)
   const pedestrianSensors = useMemo<PedestrianSensor[]>(() => {
     if (sensorCatalogue?.sensors.length) return sensorCatalogue.sensors
@@ -299,6 +483,53 @@ function App() {
     }
   }
 
+  function handleCategoryChange(category: PlaceCategoryId) {
+    setActiveCategory(category)
+    setSelectedPedestrianSensorId(null)
+    setStatusMessage(
+      `Searching for nearby ${PLACE_CATEGORIES.find((item) => item.id === category)?.label.toLocaleLowerCase() ?? 'places'}…`,
+    )
+  }
+
+  function exitPlaceMode() {
+    setActiveCategory(null)
+    setStatusMessage('Crowd heatmap restored.')
+  }
+
+  function handleVisibleCategoriesChange(categories: PlaceCategoryId[]) {
+    const requestId = preferenceSaveSequence.current + 1
+    preferenceSaveSequence.current = requestId
+    const savedLocally = saveLocalMapPreferences(categories)
+    setVisibleCategories(savedLocally.quickPlaceCategories)
+
+    if (
+      activeCategory &&
+      !savedLocally.quickPlaceCategories.includes(activeCategory)
+    ) {
+      setActiveCategory(null)
+    }
+
+    if (!authState) {
+      setPreferenceStatus('saved')
+      return
+    }
+
+    setPreferenceStatus('saving')
+    void saveCloudMapPreferences(
+      authState.session.accessToken,
+      savedLocally.quickPlaceCategories,
+    )
+      .then((saved) => {
+        if (preferenceSaveSequence.current !== requestId) return
+        setVisibleCategories(saved)
+        saveLocalMapPreferences(saved, true)
+        setPreferenceStatus('saved')
+      })
+      .catch(() => {
+        if (preferenceSaveSequence.current === requestId) setPreferenceStatus('error')
+      })
+  }
+
   function showComingSoon(feature: string) {
     setStatusMessage(`${feature} will be added in a later version.`)
   }
@@ -323,14 +554,14 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (!navigationActive || rerouteHandled || quietFinderOpen) return
+    if (!navigationActive || rerouteHandled) return
 
     const timer = window.setTimeout(() => {
       setReroutePromptVisible(true)
       setStatusMessage('Swanston Street is getting crowded. A calmer reroute is available.')
     }, 8000)
     return () => window.clearTimeout(timer)
-  }, [navigationActive, quietFinderOpen, rerouteHandled])
+  }, [navigationActive, rerouteHandled])
 
   function startNavigation() {
     setNavigationRouteId(selectedRouteId)
@@ -338,32 +569,7 @@ function App() {
     setNavigationActive(true)
     setReroutePromptVisible(false)
     setRerouteHandled(false)
-    setQuietFinderOpen(false)
-    setQuietSpaceDestinationId(null)
     setStatusMessage('Demo navigation started.')
-  }
-
-  function toggleQuietFinder() {
-    setQuietFinderOpen((open) => {
-      const nextOpen = !open
-      if (nextOpen) {
-        setSelectedQuietSpaceId(QUIET_SPACES[0].id)
-        setStatusMessage(`Showing ${QUIET_SPACES.length} nearby quiet spaces. Navigation is paused.`)
-      } else {
-        setStatusMessage('Quiet Space Finder closed. Navigation resumed.')
-      }
-      return nextOpen
-    })
-  }
-
-  function navigateToQuietSpace(spaceId: string) {
-    const space = QUIET_SPACES.find((candidate) => candidate.id === spaceId)
-    if (!space) return
-    setQuietSpaceDestinationId(space.id)
-    setQuietFinderOpen(false)
-    setReroutePromptVisible(false)
-    setRerouteHandled(true)
-    setStatusMessage(`Navigating to ${space.name}, ${space.walkingMinutes} minutes away.`)
   }
 
   function switchToReroute() {
@@ -383,8 +589,6 @@ function App() {
     setNavigationActive(false)
     setReroutePromptVisible(false)
     setRerouteHandled(true)
-    setQuietFinderOpen(false)
-    setQuietSpaceDestinationId(null)
     setRoutePlanningActive(true)
     setStatusMessage('Navigation ended. Route options are shown again.')
   }
@@ -423,7 +627,7 @@ function App() {
         </button>
       </aside>
 
-      <section className={`map-region${routePlanningActive ? ` map-region--planning map-region--route-sheet-${routeSheetState}` : ''}${navigationActive ? ' map-region--navigating' : ''}`} aria-label="Explore quiet places">
+      <section className={`map-region${routePlanningActive ? ` map-region--planning map-region--route-sheet-${routeSheetState}` : ''}${navigationActive ? ' map-region--navigating' : ''}${activeCategory ? ' map-region--places' : ''}`} aria-label="Explore places">
         <Suspense
           fallback={
             <div className="map-loading" role="status">
@@ -441,17 +645,13 @@ function App() {
             navigationActive={navigationActive}
             navigationRouteId={navigationRouteId}
             reroutePreviewVisible={reroutePromptVisible}
-            quietFinderOpen={quietFinderOpen}
-            selectedQuietSpaceId={selectedQuietSpaceId}
-            quietSpaceDestination={quietSpaceDestination}
+            activePlaceCategory={activeCategory}
             crowdPoints={crowdSnapshot?.points ?? []}
             pedestrianSensors={pedestrianSensors}
             crowdLayerMode={crowdLayerMode}
             selectedPedestrianSensorId={selectedPedestrianSensorId}
             onPedestrianSensorSelect={setSelectedPedestrianSensorId}
             routeSheetState={routeSheetState}
-            onQuietSpaceSelect={setSelectedQuietSpaceId}
-            onQuietSpaceConfirm={navigateToQuietSpace}
             onLocationStatus={setStatusMessage}
           />
         </Suspense>
@@ -471,16 +671,13 @@ function App() {
           <NavigationDemo
             routeId={navigationRouteId}
             reroutePromptVisible={reroutePromptVisible}
-            quietFinderOpen={quietFinderOpen}
-            quietSpaceDestination={quietSpaceDestination}
-            onToggleQuietFinder={toggleQuietFinder}
             onSwitchRoute={switchToReroute}
             onKeepRoute={keepCurrentRoute}
             onEndNavigation={endNavigation}
           />
         ) : null}
 
-        <aside className="sensory-pressure-legend" aria-label="Live pedestrian activity heatmap legend">
+        {!activeCategory ? <aside className="sensory-pressure-legend" aria-label="Live pedestrian activity heatmap legend">
           <div className="sensory-pressure-legend__heading">
             <div>
               <strong>Crowd level</strong>
@@ -513,7 +710,7 @@ function App() {
           >
             City of Melbourne · CC BY 4.0
           </a>
-        </aside>
+        </aside> : null}
 
         <div className="desktop-search-panel">
           <SearchField
@@ -528,7 +725,11 @@ function App() {
           <CategoryBar
             className="desktop-category-bar"
             activeCategory={activeCategory}
-            onCategoryChange={setActiveCategory}
+            visibleCategories={visibleCategories}
+            preferenceStatus={preferenceStatus}
+            onCategoryChange={handleCategoryChange}
+            onExitPlaceMode={exitPlaceMode}
+            onVisibleCategoriesChange={handleVisibleCategoriesChange}
           />
         ) : null}
 
@@ -682,22 +883,30 @@ function App() {
             <CategoryBar
               className="mobile-category-bar"
               activeCategory={activeCategory}
-              onCategoryChange={setActiveCategory}
+              visibleCategories={visibleCategories}
+              preferenceStatus={preferenceStatus}
+              onCategoryChange={handleCategoryChange}
+              onExitPlaceMode={exitPlaceMode}
+              onVisibleCategoriesChange={handleVisibleCategoriesChange}
             />
           ) : null}
         </div>
 
-        <MapLayersControl
-          mode={crowdLayerMode}
-          sensorCount={pedestrianSensors.length}
-          sensorLocationsAvailable={pedestrianSensors.length > 0}
-          onModeChange={handleCrowdLayerModeChange}
-        />
+        {!activeCategory ? (
+          <>
+            <MapLayersControl
+              mode={crowdLayerMode}
+              sensorCount={pedestrianSensors.length}
+              sensorLocationsAvailable={pedestrianSensors.length > 0}
+              onModeChange={handleCrowdLayerModeChange}
+            />
 
-        <CrowdRefreshButton
-          refreshing={crowdRefreshing}
-          onRefresh={() => void handleCrowdRefresh()}
-        />
+            <CrowdRefreshButton
+              refreshing={crowdRefreshing}
+              onRefresh={() => void handleCrowdRefresh()}
+            />
+          </>
+        ) : null}
 
         <button
           type="button"

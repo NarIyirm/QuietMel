@@ -1,11 +1,16 @@
 # QuietMel
 
-QuietMel is a responsive map experience designed to help neurodivergent people discover calmer places and routes. The current MVP focuses on a low-stimulation visual framework and a Google Maps base map; search and route planning are placeholders for later development.
+QuietMel is a responsive map experience designed to help neurodivergent people discover places and routes with a low-stimulation interface. The map opens with the live crowd layer and can switch to real Google Places category searches with walking routes.
 
 ## Google Maps setup
 
-1. Enable **Maps JavaScript API** and **Places API (New)** in your Google Cloud project, and make sure billing is enabled.
-2. Open `.env.local` and add your key:
+1. Enable billing for the Google Cloud project.
+2. Enable these APIs in **APIs & Services > Library**:
+   - **Maps JavaScript API**, for the base map and markers.
+   - **Places API**, for the Maps JavaScript Places library.
+   - **Places API (New)**, for Nearby Search (New) and place details.
+   - **Routes API**, for walking routes and route polylines.
+3. Open `.env.local` and add your key:
 
 ```env
 VITE_GOOGLE_MAPS_API_KEY=your_api_key_here
@@ -14,13 +19,23 @@ VITE_GOOGLE_MAPS_MAP_ID=DEMO_MAP_ID
 
 `DEMO_MAP_ID` is suitable for local development. A Map ID controls map styling and features; it is not the ID of Melbourne University Library or another location. For production, create a JavaScript Map ID in Google Cloud and replace this value.
 
-Sensor place details are requested from Google Places only when a user opens a
-sensor card. Results are held in the current page session to avoid duplicate
-requests and are never written to Supabase. Restrict the browser API key to the
-local and deployed website origins, and restrict its API access to Maps
-JavaScript API and Places API (New).
+Nearby places are requested live from Google Places when a scene button is
+selected. Walking routes are requested only after the user selects a place and
+chooses **Show walking route**. Google place content is held in the current page
+session and is never written to Supabase.
 
-Restrict the API key to **Websites (HTTP referrers)** and restrict its API access to **Maps JavaScript API** before deployment. Never commit `.env.local`.
+Restrict the browser key under **APIs & Services > Credentials**:
+
+- Application restriction: **Websites (HTTP referrers)**.
+- Local referrers: `http://localhost:5173/*` and `http://127.0.0.1:5173/*`.
+- Production referrers: the exact deployed domains, for example
+  `https://your-domain.example/*`.
+- API restrictions: **Maps JavaScript API**, **Places API**, **Places API
+  (New)**, and **Routes API** only.
+
+Never commit `.env.local`. `DEMO_MAP_ID` is suitable for local development. For
+production, create a JavaScript Map ID under **Google Maps Platform > Map
+Management** and replace it.
 
 ## Local development
 
@@ -39,10 +54,16 @@ port 3000. Vite proxies `/api` requests to Express.
    Supabase project settings. Never put the secret key in a `VITE_` variable.
 3. Run `supabase/migrations/20260805000100_health_check.sql` in the Supabase
    SQL editor, followed by
-   `supabase/migrations/20260805000200_pedestrian_sensors.sql`.
+   `supabase/migrations/20260805000200_pedestrian_sensors.sql`, then
+   `supabase/migrations/20260806000100_user_map_preferences.sql`.
 4. Start the project and open `http://localhost:3000/api/health/database`.
 
 A successful database connection returns `"database": "connected"`.
+
+`public.user_map_preferences` stores only the scene buttons selected by each
+user. Guests keep the same preference in versioned local storage. On first
+login, a customized guest preference is copied to the account; later logins
+load the account preference. Google Places results are never persisted.
 
 ### Email authentication and Turnstile
 
