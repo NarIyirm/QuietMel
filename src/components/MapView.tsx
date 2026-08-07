@@ -13,6 +13,7 @@ import {
   type DemoRouteId,
   type NavigationRouteId,
 } from '../data/demoRoutes'
+import type { QuietRoute, RouteCoordinate } from '../lib/quietRoute'
 import type {
   CrowdLayerMode,
   LiveCrowdPoint,
@@ -42,6 +43,9 @@ type MapViewProps = {
   onPedestrianSensorSelect: (sensorId: number | null) => void
   routeSheetState: 'collapsed' | 'medium' | 'expanded'
   onLocationStatus: (message: string) => void
+  quietRoute: QuietRoute | null
+  onUserPositionChange: (position: RouteCoordinate | null) => void
+  onMapReady: () => void
 }
 
 const MELBOURNE_CENTRE = { lat: -37.8136, lng: 144.9631 }
@@ -383,6 +387,75 @@ function LiveCrowdHeatmap({ points }: { points: LiveCrowdPoint[] }) {
   }, [map])
 
   return null
+}
+
+function RealRouteOverlay({
+  route,
+  routeSheetState,
+  navigationActive,
+}: {
+  route: QuietRoute
+  routeSheetState: 'collapsed' | 'medium' | 'expanded'
+  navigationActive: boolean
+}) {
+  const map = useMap()
+
+  useEffect(() => {
+    if (!map) return
+    const bounds = new google.maps.LatLngBounds()
+    for (const coordinate of route.path) bounds.extend(coordinate)
+    const desktop = window.matchMedia('(min-width: 768px)').matches
+    const mobilePanelHeight = navigationActive
+      ? 180
+      : routeSheetState === 'collapsed'
+        ? 132
+        : routeSheetState === 'expanded'
+          ? Math.min(720, window.innerHeight - 128)
+          : Math.min(410, Math.max(320, window.innerHeight * 0.45))
+    map.fitBounds(
+      bounds,
+      desktop
+        ? { top: 110, right: 70, bottom: 80, left: 430 }
+        : { top: 120, right: 30, bottom: mobilePanelHeight + 90, left: 30 },
+    )
+  }, [map, navigationActive, route.path, routeSheetState])
+
+  useEffect(() => {
+    if (!map) return
+    const outline = new google.maps.Polyline({
+      map,
+      path: route.path,
+      clickable: false,
+      strokeColor: '#ffffff',
+      strokeOpacity: 0.94,
+      strokeWeight: navigationActive ? 12 : 11,
+      zIndex: 31,
+    })
+    const line = new google.maps.Polyline({
+      map,
+      path: route.path,
+      clickable: false,
+      strokeColor: '#087c78',
+      strokeOpacity: 0.96,
+      strokeWeight: navigationActive ? 8 : 7,
+      zIndex: 32,
+    })
+    return () => {
+      outline.setMap(null)
+      line.setMap(null)
+    }
+  }, [map, navigationActive, route.path])
+
+  return (
+    <>
+      <AdvancedMarker position={route.origin.location} title={route.origin.label} zIndex={40}>
+        <div className="route-endpoint-marker route-endpoint-marker--start" aria-label={`Start: ${route.origin.label}`} />
+      </AdvancedMarker>
+      <AdvancedMarker position={route.destination.location} title={route.destination.label} zIndex={40}>
+        <div className="route-endpoint-marker route-endpoint-marker--end" aria-label={`Destination: ${route.destination.label}`} />
+      </AdvancedMarker>
+    </>
+  )
 }
 
 function DemoRouteOverlay({
@@ -1026,6 +1099,9 @@ function MapContent({
   onPedestrianSensorSelect,
   routeSheetState,
   onLocationStatus,
+  quietRoute,
+  onUserPositionChange,
+  onMapReady,
 }: MapViewProps) {
   const map = useMap()
   const [userPosition, setUserPosition] = useState<{ lat: number; lng: number } | null>(null)
@@ -1040,6 +1116,10 @@ function MapContent({
   const selectedReading = selectedPedestrianSensorId === null
     ? null
     : readingsBySensor.get(selectedPedestrianSensorId) ?? null
+
+  useEffect(() => {
+    if (map) onMapReady()
+  }, [map, onMapReady])
 
   function cancelSensorClose() {
     if (sensorCloseTimerRef.current !== null) {
@@ -1076,14 +1156,33 @@ function MapContent({
       ({ coords }) => {
         const position = { lat: coords.latitude, lng: coords.longitude }
         setUserPosition(position)
+        onUserPositionChange(position)
         map.setCenter(position)
         map.setZoom(15)
         onLocationStatus('Your location is shown on the map.')
       },
-      () => onLocationStatus('We could not access your location.'),
+      () => {
+        onUserPositionChange(null)
+        onLocationStatus('Location access was not available. Enter a starting point manually.')
+      },
       { enableHighAccuracy: true, timeout: 8000 },
     )
-  }, [locateRequest, map, onLocationStatus])
+  }, [locateRequest, map, onLocationStatus, onUserPositionChange])
+
+  useEffect(() => {
+    if (!map || !navigationActive || !navigator.geolocation) return
+    const watchId = navigator.geolocation.watchPosition(
+      ({ coords }) => {
+        const position = { lat: coords.latitude, lng: coords.longitude }
+        setUserPosition(position)
+        onUserPositionChange(position)
+        map.panTo(position)
+      },
+      () => onLocationStatus('Live location updates are unavailable.'),
+      { enableHighAccuracy: true, maximumAge: 5_000, timeout: 10_000 },
+    )
+    return () => navigator.geolocation.clearWatch(watchId)
+  }, [map, navigationActive, onLocationStatus, onUserPositionChange])
 
   useEffect(() => () => cancelSensorClose(), [])
 
@@ -1172,7 +1271,15 @@ function MapContent({
         </InfoWindow>
       ) : null}
 
-      {routePlanningActive ? (
+      {(routePlanningActive || navigationActive) && quietRoute ? (
+        <RealRouteOverlay
+          route={quietRoute}
+          routeSheetState={routeSheetState}
+          navigationActive={navigationActive}
+        />
+      ) : null}
+
+      {routePlanningActive && !quietRoute ? (
         <DemoRouteOverlay
           selectedRouteId={selectedRouteId}
           onRouteSelect={onRouteSelect}
@@ -1180,7 +1287,7 @@ function MapContent({
         />
       ) : null}
 
-      {navigationActive ? (
+      {navigationActive && !quietRoute ? (
         <NavigationMapOverlay
           routeId={navigationRouteId}
           reroutePreviewVisible={reroutePreviewVisible}
