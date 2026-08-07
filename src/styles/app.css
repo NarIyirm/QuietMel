@@ -3822,3 +3822,323 @@
     white-space: nowrap;
   }
 }
+
+/* Directions feature button — matches locate/refresh button styling */
+.directions-button {
+  position: absolute;
+  z-index: var(--z-controls);
+  display: grid;
+  place-items: center;
+  right: 16px;
+  bottom: calc(224px + env(safe-area-inset-bottom));
+  width: 50px;
+  height: 50px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--color-accent);
+  background: var(--color-bg);
+  box-shadow: var(--shadow-raised);
+  cursor: pointer;
+}
+
+.directions-button:hover {
+  background: var(--color-surface);
+}
+
+.directions-button:focus-visible {
+  outline: 3px solid oklch(0.72 0.11 190 / 0.6);
+  outline-offset: 3px;
+}
+
+@media (min-width: 768px) {
+  .directions-button {
+    right: 18px;
+    bottom: 294px;
+  }
+}
+
+/* ---- Directions panel ---- */
+.directions-panel {
+  position: absolute;
+  z-index: var(--z-panel);
+  right: 0;
+  bottom: calc(76px + env(safe-area-inset-bottom));
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: min(70dvh, 560px);
+  padding: 16px 18px calc(20px + env(safe-area-inset-bottom));
+  overflow-y: auto;
+  border-radius: 16px 16px 0 0;
+  color: var(--color-ink);
+  background: var(--color-bg);
+  box-shadow: 0 -3px 8px oklch(0.2 0.02 112 / 0.16);
+  overscroll-behavior: contain;
+}
+
+.directions-panel__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.directions-panel__header span {
+  display: block;
+  color: var(--color-accent);
+  font-size: 0.75rem;
+  font-weight: 750;
+}
+
+.directions-panel__header h2 {
+  margin: 3px 0 0;
+  font-size: 1.25rem;
+  line-height: 1.25;
+}
+
+.directions-panel__header button {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+
+.directions-panel__header button:hover {
+  background: var(--color-surface);
+}
+
+.directions-panel__header svg {
+  width: 20px;
+}
+
+.directions-panel__endpoint {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.directions-panel__label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+.directions-panel__dot {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+.directions-panel__dot--start {
+  background: var(--color-accent);
+}
+
+.directions-panel__dot--end {
+  border-radius: 50% 50% 50% 3px;
+  background: #c92934;
+  transform: rotate(-45deg);
+}
+
+/* The Google autocomplete web component drops in here */
+.directions-field {
+  position: relative;
+}
+
+.directions-field__autocomplete {
+  width: 100%;
+}
+
+/* The Google autocomplete uses Shadow DOM — theme it via its own
+   CSS custom properties, which pierce the shadow boundary. */
+.directions-field__autocomplete gmp-place-autocomplete {
+  width: 100%;
+  color-scheme: light;
+  --gmp-mat-color-surface: #ffffff;
+  --gmp-mat-color-on-surface: #1a1a1a;
+  --gmp-mat-color-on-surface-variant: #5a5a5a;
+  --gmp-mat-color-outline: #d0d0d0;
+  --gmp-mat-color-primary: #087c78;
+  --gmp-mat-color-surface-container-highest: #ffffff;
+}
+/* Fallback: force the inner input to light colours */
+.directions-field__autocomplete input {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border) !important;
+  border-radius: 10px !important;
+  color: var(--color-ink) !important;
+  background: var(--color-bg) !important;
+  font-size: 0.875rem;
+}
+
+.directions-field__placeholder {
+  color: var(--color-muted);
+  font-size: 0.8125rem;
+}
+
+.directions-field__value {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.8125rem;
+  font-weight: 650;
+}
+
+.directions-panel__resolved {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--color-surface);
+  font-size: 0.875rem;
+  font-weight: 650;
+}
+
+.directions-panel__resolved > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.directions-panel__resolved svg {
+  flex: 0 0 auto;
+  color: var(--color-accent);
+}
+
+.directions-panel__resolved button {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  color: var(--color-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.directions-panel__resolved button:hover {
+  color: var(--color-ink);
+  background: var(--color-bg);
+}
+
+.directions-panel__origin-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.directions-panel__origin-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-ink);
+  background: var(--color-bg);
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.directions-panel__origin-actions button:hover,
+.directions-panel__origin-actions button.is-active {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  background: oklch(0.97 0.014 190);
+}
+
+.directions-panel__summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 11px 12px;
+  border-radius: 10px;
+  color: #35534d;
+  background: #edf5f2;
+}
+
+.directions-panel__summary strong {
+  color: #087c78;
+  font-size: 1.125rem;
+}
+
+.directions-panel__summary span {
+  font-size: 0.8125rem;
+}
+
+.directions-panel__go {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 12px;
+  color: white;
+  background: #087c78;
+  font-size: 0.875rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.directions-panel__go:hover:not(:disabled) {
+  background: #066b68;
+}
+
+.directions-panel__go:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Direction endpoint markers on the map */
+.directions-marker {
+  width: 18px;
+  height: 18px;
+  border: 4px solid white;
+  border-radius: 50%;
+  background: #087c78;
+  box-shadow: 0 2px 6px oklch(0.2 0.02 112 / 0.28);
+}
+
+.directions-marker--end {
+  width: 22px;
+  height: 22px;
+  border-radius: 50% 50% 50% 5px;
+  background: #c92934;
+  transform: rotate(-45deg);
+}
+
+@media (min-width: 768px) {
+  .directions-panel {
+    top: 0;
+    right: auto;
+    bottom: 0;
+    left: 0;
+    width: 380px;
+    max-height: none;
+    z-index: calc(var(--z-panel) + 5);
+    border-right: 1px solid var(--color-border);
+    border-radius: 0;
+    box-shadow: 3px 0 8px oklch(0.2 0.02 112 / 0.12);
+  }
+}

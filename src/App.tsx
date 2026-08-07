@@ -1,4 +1,5 @@
 import { lazy, Suspense, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { DirectionsPanel, type DirectionsPoint, type PickTarget } from './components/DirectionsPanel'
 import {
   BookOpen,
   Bookmark,
@@ -15,6 +16,7 @@ import {
   Navigation,
   Palette,
   Plus,
+  Route,
   Search,
   Settings,
   SlidersHorizontal,
@@ -315,6 +317,12 @@ function App() {
   const [reroutePromptVisible, setReroutePromptVisible] = useState(false)
   const [rerouteHandled, setRerouteHandled] = useState(false)
   const [routeSheetState, setRouteSheetState] = useState<RouteSheetState>('medium')
+  const [directionsActive, setDirectionsActive] = useState(false)
+  const [directionsOrigin, setDirectionsOrigin] = useState<DirectionsPoint | null>(null)
+  const [directionsDestination, setDirectionsDestination] = useState<DirectionsPoint | null>(null)
+  const [directionsPickTarget, setDirectionsPickTarget] = useState<PickTarget>(null)
+  const [directionsSummary, setDirectionsSummary] = useState<{ distance: string; duration: string } | null>(null)
+  const [directionsCalculating, setDirectionsCalculating] = useState(false)
   const {
     snapshot: crowdSnapshot,
     loading: crowdLoading,
@@ -541,6 +549,71 @@ function App() {
     setStatusMessage('Navigation ended. Route options are shown again.')
   }
 
+  // Enter the directions mode; close other overlays so they don't overlap.
+  function openDirections() {
+    setDirectionsActive(true)
+    setActiveCategory(null)
+    setRoutePlanningActive(false)
+    setNavigationActive(false)
+    setForecasting(false)
+    setStatusMessage('Choose a start and destination for a walking route.')
+  }
+
+  // Exit directions and reset all its state.
+  function closeDirections() {
+    setDirectionsActive(false)
+    setDirectionsOrigin(null)
+    setDirectionsDestination(null)
+    setDirectionsPickTarget(null)
+    setDirectionsSummary(null)
+    setDirectionsCalculating(false)
+    setStatusMessage('Crowd map restored.')
+  }
+
+  // "My location" for the origin: read the browser geolocation.
+  function useMyLocationAsOrigin() {
+    if (!navigator.geolocation) {
+      setStatusMessage('Location is not available in this browser.')
+      return
+    }
+    setStatusMessage('Finding your location…')
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => {
+        setDirectionsOrigin({
+          label: 'My location',
+          location: { lat: coords.latitude, lng: coords.longitude },
+        })
+        setStatusMessage('Start point set to your location.')
+      },
+      () => setStatusMessage('We could not access your location.'),
+      { enableHighAccuracy: true, timeout: 8000 },
+    )
+  }
+
+  // The map reports a tapped point; assign it to whichever endpoint is being picked.
+  function handleDirectionsMapPick(point: DirectionsPoint) {
+    if (directionsPickTarget === 'origin') {
+      setDirectionsOrigin(point)
+    } else if (directionsPickTarget === 'destination') {
+      setDirectionsDestination(point)
+    }
+    setDirectionsPickTarget(null)
+  }
+
+  // Trigger route calculation. The actual compute happens in MapView's overlay,
+  // which runs whenever both endpoints are set; here we just flip the flag and
+  // let the result callback clear it.
+  function calculateDirections() {
+    if (!directionsOrigin || !directionsDestination) return
+    setDirectionsCalculating(true)
+  }
+
+  // Receive the computed route summary (or null) back from MapView.
+  function handleDirectionsRouteResult(summary: { distance: string; duration: string } | null) {
+    setDirectionsSummary(summary)
+    setDirectionsCalculating(false)
+  }
+
   return (
     <main className={`map-app${navigationActive ? ' map-app--navigating' : ''}`}>
       <aside className="desktop-rail" aria-label="Main navigation">
@@ -601,6 +674,12 @@ function App() {
             onPedestrianSensorSelect={setSelectedPedestrianSensorId}
             routeSheetState={routeSheetState}
             onLocationStatus={setStatusMessage}
+            directionsActive={directionsActive}
+            directionsOrigin={directionsOrigin}
+            directionsDestination={directionsDestination}
+            directionsPickTarget={directionsPickTarget}
+            onDirectionsMapPick={handleDirectionsMapPick}
+            onDirectionsRouteResult={handleDirectionsRouteResult}
           />
         </Suspense>
 
@@ -625,6 +704,22 @@ function App() {
           />
         ) : null}
 
+        {directionsActive ? (
+          <DirectionsPanel
+            origin={directionsOrigin}
+            destination={directionsDestination}
+            pickTarget={directionsPickTarget}
+            routeSummary={directionsSummary}
+            calculating={directionsCalculating}
+            onOriginChange={setDirectionsOrigin}
+            onDestinationChange={setDirectionsDestination}
+            onUseMyLocation={useMyLocationAsOrigin}
+            onPickTargetChange={setDirectionsPickTarget}
+            onCalculate={calculateDirections}
+            onClose={closeDirections}
+          />
+        ) : null}
+        
         {!activeCategory && !forecasting ? <aside className="sensory-pressure-legend" aria-label="Live pedestrian activity heatmap legend">
           <div className="sensory-pressure-legend__heading">
             <div>
@@ -762,6 +857,18 @@ function App() {
             />
           </>
         ) : null}
+
+
+        <button
+          type="button"
+          className="directions-button"
+          aria-label="Plan a walking route"
+          aria-pressed={directionsActive}
+          onClick={() => (directionsActive ? closeDirections() : openDirections())}
+        >
+          <Route aria-hidden="true" size={22} />
+        </button>
+
 
         <button
           type="button"
