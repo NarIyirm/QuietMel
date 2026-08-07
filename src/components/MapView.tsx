@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { scoreRouteQuietness, type RouteQuietnessResult } from '../lib/routeQuietness'
 import { ExternalLink, X } from 'lucide-react'
 import {
   AdvancedMarker,
@@ -50,6 +51,7 @@ type MapViewProps = {
   directionsPickTarget: PickTarget
   onDirectionsMapPick: (point: DirectionsPoint) => void
   onDirectionsRouteResult: (summary: { distance: string; duration: string } | null) => void
+  onDirectionsQuietnessResult: (result: RouteQuietnessResult | null) => void
 }
 
 const MELBOURNE_CENTRE = { lat: -37.8136, lng: 144.9631 }
@@ -1022,15 +1024,19 @@ function DirectionsOverlay({
   origin,
   destination,
   pickTarget,
+  crowdPoints,
   onMapPick,
   onRouteResult,
+  onQuietnessResult,
   onStatus,
 }: {
   origin: DirectionsPoint | null
   destination: DirectionsPoint | null
   pickTarget: PickTarget
+  crowdPoints: LiveCrowdPoint[]
   onMapPick: (point: DirectionsPoint) => void
   onRouteResult: (summary: { distance: string; duration: string } | null) => void
+  onQuietnessResult: (result: RouteQuietnessResult | null) => void
   onStatus: (message: string) => void
 }) {
   const map = useMap()
@@ -1066,6 +1072,7 @@ function DirectionsOverlay({
     if (!map || !origin || !destination) {
       clearRouteLines()
       onRouteResult(null)
+      onQuietnessResult(null)
       return
     }
 
@@ -1120,7 +1127,18 @@ function DirectionsOverlay({
         const duration = route.localizedValues?.duration
           ?? `${Math.max(1, Math.round((route.durationMillis ?? 0) / 60_000))} min`
         onRouteResult({ distance, duration })
-        onStatus(`Walking route ready: ${duration}, ${distance}.`)
+
+        // Score the route against live pedestrian crowd data.
+        const path = route.path?.map((point) => ({
+          lat: point.lat,
+          lng: point.lng,
+        })) ?? []
+        const quietness = scoreRouteQuietness(path, crowdPoints)
+        onQuietnessResult(quietness)
+
+        onStatus(
+          `Walking route ready: ${duration}, ${distance}. ${quietness.quietnessLabel}.`,
+        )
       } catch {
         if (routeSequence.current !== requestId) return
         clearRouteLines()
@@ -1176,6 +1194,7 @@ function MapContent({
   directionsPickTarget,
   onDirectionsMapPick,
   onDirectionsRouteResult,
+  onDirectionsQuietnessResult,
 }: MapViewProps) {
   const map = useMap()
   const [userPosition, setUserPosition] = useState<{ lat: number; lng: number } | null>(null)
@@ -1351,8 +1370,10 @@ function MapContent({
           origin={directionsOrigin}
           destination={directionsDestination}
           pickTarget={directionsPickTarget}
+          crowdPoints={crowdPoints}
           onMapPick={onDirectionsMapPick}
           onRouteResult={onDirectionsRouteResult}
+          onQuietnessResult={onDirectionsQuietnessResult}
           onStatus={onLocationStatus}
         />
       ) : null}

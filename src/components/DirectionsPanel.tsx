@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Crosshair, MapPin, MapPinned, Navigation, X } from 'lucide-react'
+import type { RouteQuietnessResult } from '../lib/routeQuietness'
 
 // A resolved endpoint: a label to show in the UI + the actual coordinates.
 export type DirectionsPoint = {
@@ -22,6 +23,7 @@ type DirectionsPanelProps = {
   onPickTargetChange: (target: PickTarget) => void
   onCalculate: () => void
   onClose: () => void
+  quietness: RouteQuietnessResult | null
 }
 
 // Wraps the new Google PlaceAutocompleteElement (a Web Component).
@@ -108,6 +110,7 @@ export function DirectionsPanel({
   pickTarget,
   routeSummary,
   calculating,
+  quietness,
   onOriginChange,
   onDestinationChange,
   onUseMyLocation,
@@ -214,6 +217,33 @@ export function DirectionsPanel({
         <div className="directions-panel__summary">
           <strong>{routeSummary.duration}</strong>
           <span>{routeSummary.distance} walking</span>
+        </div>
+      ) : null}
+
+      {quietness ? (
+        <div className="directions-panel__quietness">
+          <div className="directions-panel__quietness-score">
+            <strong>{quietness.quietnessScore}</strong>
+            <span>/ 100 quietness · {quietness.quietnessLabel}</span>
+          </div>
+          {quietness.crowdedSegments.length > 0 ? (
+            <div className="directions-panel__crowded">
+              <span>Passes {quietness.crowdedSegments.length} busy area
+                {quietness.crowdedSegments.length > 1 ? 's' : ''}:</span>
+              <ul>
+                {quietness.crowdedSegments.slice(0, 3).map((segment) => (
+                  <li key={segment.sensorId}>
+                    {segment.name}
+                    <em className={`directions-panel__crowd-tag directions-panel__crowd-tag--${segment.crowdLevel}`}>
+                      {segment.crowdLevel}
+                    </em>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <p className="directions-panel__quiet-note">No busy areas along this route.</p>
+          )}
         </div>
       ) : null}
 

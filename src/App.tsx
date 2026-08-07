@@ -323,6 +323,7 @@ function App() {
   const [directionsPickTarget, setDirectionsPickTarget] = useState<PickTarget>(null)
   const [directionsSummary, setDirectionsSummary] = useState<{ distance: string; duration: string } | null>(null)
   const [directionsCalculating, setDirectionsCalculating] = useState(false)
+  const [directionsQuietness, setDirectionsQuietness] = useState<import('./lib/routeQuietness').RouteQuietnessResult | null>(null)
   const {
     snapshot: crowdSnapshot,
     loading: crowdLoading,
@@ -566,6 +567,7 @@ function App() {
     setDirectionsDestination(null)
     setDirectionsPickTarget(null)
     setDirectionsSummary(null)
+    setDirectionsQuietness(null)
     setDirectionsCalculating(false)
     setStatusMessage('Crowd map restored.')
   }
@@ -612,6 +614,12 @@ function App() {
   function handleDirectionsRouteResult(summary: { distance: string; duration: string } | null) {
     setDirectionsSummary(summary)
     setDirectionsCalculating(false)
+  }
+
+  function handleDirectionsQuietnessResult(
+    result: import('./lib/routeQuietness').RouteQuietnessResult | null,
+  ) {
+    setDirectionsQuietness(result)
   }
 
   return (
@@ -680,6 +688,7 @@ function App() {
             directionsPickTarget={directionsPickTarget}
             onDirectionsMapPick={handleDirectionsMapPick}
             onDirectionsRouteResult={handleDirectionsRouteResult}
+            onDirectionsQuietnessResult={handleDirectionsQuietnessResult}
           />
         </Suspense>
 
@@ -710,6 +719,7 @@ function App() {
             destination={directionsDestination}
             pickTarget={directionsPickTarget}
             routeSummary={directionsSummary}
+            quietness={directionsQuietness}
             calculating={directionsCalculating}
             onOriginChange={setDirectionsOrigin}
             onDestinationChange={setDirectionsDestination}
