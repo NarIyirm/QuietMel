@@ -9,6 +9,7 @@
     "dev:server": "tsx watch server/index.ts",
     "build": "npm run check:server && tsc -b && vite build",
     "check:server": "tsc -p server/tsconfig.json",
+    "forecast:import": "node scripts/import-forecast.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },

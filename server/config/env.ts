@@ -7,11 +7,6 @@ function readFirst(...names: string[]) {
   return undefined
 }
 
-function parseBoolean(value: string | undefined, fallback: boolean) {
-  if (value === undefined) return fallback
-  return value.toLowerCase() === 'true'
-}
-
 export const env = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
   port: Number(process.env.PORT ?? 3000),
@@ -28,8 +23,6 @@ export const env = {
     'SUPABASE_SECRET_KEY',
     'SUPABASE_SERVICE_ROLE_KEY',
   ),
-  captchaRequired: parseBoolean(process.env.AUTH_CAPTCHA_REQUIRED, false),
-  emailRedirectUrl: readFirst('AUTH_EMAIL_REDIRECT_URL'),
 }
 
 export function getMissingSupabaseVariables() {

@@ -54,32 +54,14 @@ port 3000. Vite proxies `/api` requests to Express.
    Supabase project settings. Never put the secret key in a `VITE_` variable.
 3. Run `supabase/migrations/20260805000100_health_check.sql` in the Supabase
    SQL editor, followed by
-   `supabase/migrations/20260805000200_pedestrian_sensors.sql`, then
-   `supabase/migrations/20260806000100_user_map_preferences.sql`.
+   `supabase/migrations/20260805000200_pedestrian_sensors.sql`.
 4. Start the project and open `http://localhost:3000/api/health/database`.
 
 A successful database connection returns `"database": "connected"`.
 
-`public.user_map_preferences` stores only the scene buttons selected by each
-user. Guests keep the same preference in versioned local storage. On first
-login, a customized guest preference is copied to the account; later logins
-load the account preference. Google Places results are never persisted.
-
-### Email authentication and Turnstile
-
-The API provides:
-
-- `POST /api/auth/register`
-- `POST /api/auth/login`
-
-Both accept JSON with `email`, `password`, and an optional `turnstileToken`.
-To enforce CAPTCHA, create a Cloudflare Turnstile widget, enable Turnstile in
-Supabase under Authentication > Bot and Abuse Protection, and set
-`AUTH_CAPTCHA_REQUIRED=true`. Supabase validates the single-use token; do not
-also submit the same token to Cloudflare Siteverify from Express.
-
-Keep CAPTCHA disabled until the frontend widget is connected. Cloudflare's
-test site key in `.env.example` is for local development only.
+Scene button selections are stored only in versioned browser local storage.
+They are restored on the same device after a refresh. Google Places results
+are never persisted.
 
 ### Live pedestrian activity
 
@@ -88,10 +70,8 @@ counts with its active sensor locations. Express keeps the latest reading for
 each sensor, classifies it using the project's low/medium/high thresholds, and
 caches the snapshot for 60 seconds before the React map requests it.
 
-This first live-data phase does not persist pedestrian readings in Supabase.
-Historical storage should be added when trend analysis or forecasting is
-implemented. The source data is provided by the City of Melbourne under
-CC BY 4.0.
+This live-data phase does not persist minute-by-minute pedestrian readings in
+Supabase. The source data is provided by the City of Melbourne under CC BY 4.0.
 
 `GET /api/crowd/sensors` exposes the stable sensor-location catalogue. The
 service synchronises City of Melbourne sensor names, descriptions and
@@ -100,12 +80,32 @@ the upstream location feed is unavailable. Minute-by-minute counts are not
 stored. Google Places content is also not persisted; the table only reserves
 an optional `google_place_id`, which Google permits applications to retain.
 
+### Six-hour crowd forecast
+
+The Forecast button requests `GET /api/crowd/forecast` once and animates 25
+heatmap frames from the current Melbourne time through the next six hours at
+15-minute intervals. A predicted value of zero means no pedestrians and is not
+rendered as heat. Sensors 28, 65 and 78 are excluded from the model.
+
+The forecast profile is based on the latest two-year rolling training window.
+To store the trained profile in Supabase:
+
+1. Run `supabase/migrations/20260808000100_crowd_hourly_profiles.sql` in the
+   Supabase SQL editor.
+2. Run `npm run forecast:import` to validate and upload
+   `model/output/crowd_hourly_profiles.csv`.
+
+The Express forecast service reads profiles exclusively from the Supabase
+table. The versioned CSV is only a training/import artifact and is never used
+as a runtime fallback.
+
 ## Commands
 
 - `npm run dev`: start the Vite development server
 - `npm run dev:client`: start only the Vite frontend
 - `npm run dev:server`: start only the Express API
 - `npm run check:server`: type-check the Express API
+- `npm run forecast:import`: validate and upload the trained forecast profile
 - `npm run build`: type-check and create a production build
 - `npm run lint`: check code quality
 - `npm run preview`: preview the production build

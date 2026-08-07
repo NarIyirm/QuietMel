@@ -330,13 +330,13 @@ export async function getPedestrianSensorCatalogue(): Promise<PedestrianSensorCa
   }
 }
 
-function getCrowdLevel(count: number): CrowdLevel {
+export function getCrowdLevel(count: number): CrowdLevel {
   if (count < 50) return 'low'
   if (count < 150) return 'medium'
   return 'high'
 }
 
-function getIntensity(count: number) {
+export function getIntensity(count: number) {
   if (count <= 50) return Math.round((count / 50) * 35)
   if (count <= 150) return Math.round(35 + ((count - 50) / 100) * 40)
   return Math.round(75 + Math.min((count - 150) / 150, 1) * 25)
