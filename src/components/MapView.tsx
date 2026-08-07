@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { scoreRouteQuietness, type RouteQuietnessResult } from '../lib/routeQuietness'
 import { ExternalLink, X } from 'lucide-react'
 import {
   AdvancedMarker,
@@ -19,6 +20,7 @@ import type {
   PedestrianSensor,
 } from '../lib/crowd'
 import { getPlaceCategory, type PlaceCategoryId } from '../lib/placeDiscovery'
+import type { DirectionsPoint, PickTarget } from './DirectionsPanel'
 
 type ZoomRequest = {
   id: number
@@ -42,6 +44,14 @@ type MapViewProps = {
   onPedestrianSensorSelect: (sensorId: number | null) => void
   routeSheetState: 'collapsed' | 'medium' | 'expanded'
   onLocationStatus: (message: string) => void
+  // Directions feature: real walking route between two chosen points.
+  directionsActive: boolean
+  directionsOrigin: DirectionsPoint | null
+  directionsDestination: DirectionsPoint | null
+  directionsPickTarget: PickTarget
+  onDirectionsMapPick: (point: DirectionsPoint) => void
+  onDirectionsRouteResult: (summary: { distance: string; duration: string } | null) => void
+  onDirectionsQuietnessResult: (result: RouteQuietnessResult | null) => void
 }
 
 const MELBOURNE_CENTRE = { lat: -37.8136, lng: 144.9631 }
@@ -768,6 +778,7 @@ function PlaceDiscoveryOverlay({
   const routePolylines = useRef<google.maps.Polyline[]>([])
   const selectedPlace = places.find((place) => place.id === selectedPlaceId) ?? null
 
+ 
   function clearRoute() {
     routeSequence.current += 1
     for (const polyline of routePolylines.current) polyline.setMap(null)
@@ -1009,6 +1020,157 @@ function PlaceDiscoveryOverlay({
   )
 }
 
+function DirectionsOverlay({
+  origin,
+  destination,
+  pickTarget,
+  crowdPoints,
+  onMapPick,
+  onRouteResult,
+  onQuietnessResult,
+  onStatus,
+}: {
+  origin: DirectionsPoint | null
+  destination: DirectionsPoint | null
+  pickTarget: PickTarget
+  crowdPoints: LiveCrowdPoint[]
+  onMapPick: (point: DirectionsPoint) => void
+  onRouteResult: (summary: { distance: string; duration: string } | null) => void
+  onQuietnessResult: (result: RouteQuietnessResult | null) => void
+  onStatus: (message: string) => void
+}) {
+  const map = useMap()
+  const routePolylines = useRef<google.maps.Polyline[]>([])
+  const routeSequence = useRef(0)
+
+  // Clear any drawn route lines from the map.
+  function clearRouteLines() {
+    for (const polyline of routePolylines.current) polyline.setMap(null)
+    routePolylines.current = []
+  }
+
+  // When "pick on map" is active, the next map click sets that endpoint.
+  useEffect(() => {
+    if (!map || !pickTarget) return
+
+    const listener = map.addListener('click', (event: google.maps.MapMouseEvent) => {
+      const latLng = event.latLng
+      if (!latLng) return
+      const location = { lat: latLng.lat(), lng: latLng.lng() }
+      // Report the tapped location; the label is a short coordinate string.
+      onMapPick({
+        label: `Dropped pin (${location.lat.toFixed(4)}, ${location.lng.toFixed(4)})`,
+        location,
+      })
+    })
+
+    return () => listener.remove()
+  }, [map, pickTarget, onMapPick])
+
+  // Whenever both endpoints exist, compute and draw a real walking route.
+  useEffect(() => {
+    if (!map || !origin || !destination) {
+      clearRouteLines()
+      onRouteResult(null)
+      onQuietnessResult(null)
+      return
+    }
+
+    const requestId = routeSequence.current + 1
+    routeSequence.current = requestId
+    onStatus('Calculating a walking route…')
+
+    void (async () => {
+      try {
+        const { Route } = await google.maps.importLibrary('routes') as google.maps.RoutesLibrary
+        const result = await Route.computeRoutes({
+          origin: origin.location,
+          destination: destination.location,
+          travelMode: 'WALKING',
+          fields: ['path', 'distanceMeters', 'durationMillis', 'localizedValues', 'viewport'],
+          language: 'en-AU',
+          region: 'AU',
+          units: google.maps.UnitSystem.METRIC,
+        })
+
+        // Ignore if a newer request started while we awaited.
+        if (routeSequence.current !== requestId) return
+
+        const route = result.routes?.[0]
+        if (!route) throw new Error('No walking route returned')
+
+        clearRouteLines()
+        const polylines = route.createPolylines({
+          polylineOptions: {
+            strokeColor: '#087c78',
+            strokeOpacity: 0.95,
+            strokeWeight: 7,
+            zIndex: 40,
+          },
+        })
+        for (const polyline of polylines) polyline.setMap(map)
+        routePolylines.current = polylines
+
+        // Fit the map to the whole route.
+        if (route.viewport) {
+          const desktop = window.matchMedia('(min-width: 768px)').matches
+          map.fitBounds(
+            route.viewport,
+            desktop
+              ? { top: 120, right: 90, bottom: 100, left: 420 }
+              : { top: 190, right: 44, bottom: 220, left: 44 },
+          )
+        }
+
+        const distance = route.localizedValues?.distance
+          ?? `${Math.round((route.distanceMeters ?? 0) / 10) / 100} km`
+        const duration = route.localizedValues?.duration
+          ?? `${Math.max(1, Math.round((route.durationMillis ?? 0) / 60_000))} min`
+        onRouteResult({ distance, duration })
+
+        // Score the route against live pedestrian crowd data.
+        const path = route.path?.map((point) => ({
+          lat: point.lat,
+          lng: point.lng,
+        })) ?? []
+        const quietness = scoreRouteQuietness(path, crowdPoints)
+        onQuietnessResult(quietness)
+
+        onStatus(
+          `Walking route ready: ${duration}, ${distance}. ${quietness.quietnessLabel}.`,
+        )
+      } catch {
+        if (routeSequence.current !== requestId) return
+        clearRouteLines()
+        onRouteResult(null)
+        onStatus('Could not calculate a walking route. Check the Routes API configuration.')
+      }
+    })()
+
+    return () => {
+      routeSequence.current += 1
+    }
+   }, [map, origin, destination])
+
+  // Clean up route lines when the overlay unmounts.
+  useEffect(() => clearRouteLines, [])
+
+  return (
+    <>
+      {origin ? (
+        <AdvancedMarker position={origin.location} title="Start" zIndex={50}>
+          <div className="directions-marker directions-marker--start" aria-label="Start point" />
+        </AdvancedMarker>
+      ) : null}
+      {destination ? (
+        <AdvancedMarker position={destination.location} title="Destination" zIndex={50}>
+          <div className="directions-marker directions-marker--end" aria-label="Destination" />
+        </AdvancedMarker>
+      ) : null}
+    </>
+  )
+}
+
 function MapContent({
   locateRequest,
   zoomRequest,
@@ -1026,6 +1188,13 @@ function MapContent({
   onPedestrianSensorSelect,
   routeSheetState,
   onLocationStatus,
+  directionsActive,
+  directionsOrigin,
+  directionsDestination,
+  directionsPickTarget,
+  onDirectionsMapPick,
+  onDirectionsRouteResult,
+  onDirectionsQuietnessResult,
 }: MapViewProps) {
   const map = useMap()
   const [userPosition, setUserPosition] = useState<{ lat: number; lng: number } | null>(null)
@@ -1192,6 +1361,19 @@ function MapContent({
           key={`${activePlaceCategory}:${userPosition?.lat ?? 'map'}:${userPosition?.lng ?? 'centre'}`}
           categoryId={activePlaceCategory}
           userPosition={userPosition}
+          onStatus={onLocationStatus}
+        />
+      ) : null}
+
+      {directionsActive ? (
+        <DirectionsOverlay
+          origin={directionsOrigin}
+          destination={directionsDestination}
+          pickTarget={directionsPickTarget}
+          crowdPoints={crowdPoints}
+          onMapPick={onDirectionsMapPick}
+          onRouteResult={onDirectionsRouteResult}
+          onQuietnessResult={onDirectionsQuietnessResult}
           onStatus={onLocationStatus}
         />
       ) : null}
