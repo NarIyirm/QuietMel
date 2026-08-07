@@ -7,8 +7,6 @@ import {
   Leaf,
   Library,
   Landmark,
-  LogIn,
-  LogOut,
   MapPin,
   MapPinned,
   Menu,
@@ -21,43 +19,32 @@ import {
   Settings,
   SlidersHorizontal,
   Trees,
-  UserRound,
-  UserPlus,
   UsersRound,
   Waves,
   X,
   type LucideIcon,
 } from 'lucide-react'
-import { AuthPanel } from './components/AuthPanel'
 import { CrowdRefreshButton } from './components/CrowdRefreshButton'
+import { ForecastControls } from './components/ForecastControls'
 import { MapLayersControl } from './components/MapLayersControl'
-import { PulseLoader } from './components/PulseLoader'
 import { RoutePlanner, type RouteSheetState } from './components/RoutePlanner'
 import { NavigationDemo } from './components/NavigationDemo'
 import { type DemoRouteId, type NavigationRouteId } from './data/demoRoutes'
 import { PLACES } from './data/places'
 import { useLiveCrowd } from './hooks/useLiveCrowd'
+import { useCrowdForecast } from './hooks/useCrowdForecast'
 import { usePedestrianSensors } from './hooks/usePedestrianSensors'
-import type { CrowdLayerMode, PedestrianSensor } from './lib/crowd'
-import {
-  loadCloudMapPreferences,
-  readLocalMapPreferences,
-  saveCloudMapPreferences,
-  saveLocalMapPreferences,
-} from './lib/mapPreferences'
+import type {
+  CrowdLayerMode,
+  LiveCrowdPoint,
+  PedestrianSensor,
+} from './lib/crowd'
+import { readLocalMapPreferences, saveLocalMapPreferences } from './lib/mapPreferences'
 import {
   DEFAULT_PLACE_CATEGORY_IDS,
   PLACE_CATEGORIES,
   type PlaceCategoryId,
 } from './lib/placeDiscovery'
-import {
-  clearStoredAuth,
-  getUserInitial,
-  logoutAuth,
-  readStoredAuth,
-  restoreStoredAuth,
-  type StoredAuth,
-} from './lib/auth'
 import './styles/app.css'
 
 const MapView = lazy(() => import('./components/MapView'))
@@ -311,11 +298,13 @@ function App() {
   const [preferenceStatus, setPreferenceStatus] = useState<
     'idle' | 'saving' | 'saved' | 'error'
   >('idle')
-  const preferenceSaveSequence = useRef(0)
   const [selectedPlaceId, setSelectedPlaceId] = useState(PLACES[0].id)
   const [locateRequest, setLocateRequest] = useState(0)
   const [crowdLayerMode, setCrowdLayerMode] = useState<CrowdLayerMode>('heatmap')
   const [selectedPedestrianSensorId, setSelectedPedestrianSensorId] = useState<number | null>(null)
+  const [forecasting, setForecasting] = useState(false)
+  const [forecastFrameIndex, setForecastFrameIndex] = useState(0)
+  const [forecastPlaying, setForecastPlaying] = useState(false)
   const [zoomRequest, setZoomRequest] = useState({ id: 0, delta: 0 })
   const [statusMessage, setStatusMessage] = useState('')
   const [routePlanningActive, setRoutePlanningActive] = useState(false)
@@ -326,10 +315,6 @@ function App() {
   const [reroutePromptVisible, setReroutePromptVisible] = useState(false)
   const [rerouteHandled, setRerouteHandled] = useState(false)
   const [routeSheetState, setRouteSheetState] = useState<RouteSheetState>('medium')
-  const [authPanelOpen, setAuthPanelOpen] = useState(false)
-  const [authPanelMode, setAuthPanelMode] = useState<'login' | 'register'>('login')
-  const [authState, setAuthState] = useState<StoredAuth | null>(() => readStoredAuth())
-  const [loggingOut, setLoggingOut] = useState(false)
   const {
     snapshot: crowdSnapshot,
     loading: crowdLoading,
@@ -337,65 +322,13 @@ function App() {
     error: crowdError,
     refresh: refreshCrowd,
   } = useLiveCrowd()
+  const {
+    snapshot: forecastSnapshot,
+    loading: forecastLoading,
+    load: loadForecast,
+    reset: resetForecast,
+  } = useCrowdForecast()
   const { catalogue: sensorCatalogue } = usePedestrianSensors()
-
-  useEffect(() => {
-    let active = true
-
-    void restoreStoredAuth().then((auth) => {
-      if (active) setAuthState(auth)
-    })
-
-    return () => {
-      active = false
-    }
-  }, [])
-
-  useEffect(() => {
-    let active = true
-    const localPreferences = readLocalMapPreferences()
-
-    if (!authState) {
-      return () => {
-        active = false
-      }
-    }
-
-    void loadCloudMapPreferences(authState.session.accessToken)
-      .then(async (cloudPreferences) => {
-        if (!active) return
-
-        if (cloudPreferences.source === 'stored') {
-          setVisibleCategories(cloudPreferences.quickPlaceCategories)
-          saveLocalMapPreferences(cloudPreferences.quickPlaceCategories, true)
-          setPreferenceStatus('saved')
-          return
-        }
-
-        if (localPreferences.customized) {
-          const saved = await saveCloudMapPreferences(
-            authState.session.accessToken,
-            localPreferences.quickPlaceCategories,
-          )
-          if (!active) return
-          setVisibleCategories(saved)
-          saveLocalMapPreferences(saved, true)
-        } else {
-          setVisibleCategories(cloudPreferences.quickPlaceCategories)
-          saveLocalMapPreferences(cloudPreferences.quickPlaceCategories, false)
-        }
-        setPreferenceStatus('saved')
-      })
-      .catch(() => {
-        if (!active) return
-        setVisibleCategories(localPreferences.quickPlaceCategories)
-        setPreferenceStatus('error')
-      })
-
-    return () => {
-      active = false
-    }
-  }, [authState])
 
   const visiblePlaces = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase()
@@ -415,7 +348,6 @@ function App() {
     visiblePlaces.find((place) => place.id === selectedPlaceId) ??
     visiblePlaces[0] ??
     PLACES[0]
-  const userInitial = getUserInitial(authState?.user)
   const pedestrianSensors = useMemo<PedestrianSensor[]>(() => {
     if (sensorCatalogue?.sensors.length) return sensorCatalogue.sensors
     return (crowdSnapshot?.points ?? []).map((point) => ({
@@ -428,6 +360,44 @@ function App() {
       googlePlaceId: null,
     }))
   }, [crowdSnapshot?.points, sensorCatalogue?.sensors])
+  const forecastSensorMap = useMemo(
+    () => new Map((forecastSnapshot?.sensors ?? []).map((sensor) => [sensor.sensorId, sensor])),
+    [forecastSnapshot?.sensors],
+  )
+  const activeForecastFrame = forecastSnapshot?.frames[forecastFrameIndex] ?? null
+  const forecastCrowdPoints = useMemo<LiveCrowdPoint[]>(() => {
+    if (!activeForecastFrame) return []
+    return activeForecastFrame.values.flatMap((value) => {
+      const sensor = forecastSensorMap.get(value.sensorId)
+      if (!sensor) return []
+      return [{
+        sensorId: sensor.sensorId,
+        name: sensor.name,
+        latitude: sensor.latitude,
+        longitude: sensor.longitude,
+        pedestriansPerMinute: value.pedestriansPerMinute,
+        crowdLevel: value.crowdLevel,
+        intensity: value.intensity,
+        measuredAt: activeForecastFrame.forecastAt,
+      }]
+    })
+  }, [activeForecastFrame, forecastSensorMap])
+  const displayedCrowdPoints = forecasting
+    ? forecastCrowdPoints
+    : crowdSnapshot?.points ?? []
+
+  useEffect(() => {
+    if (!forecasting || !forecastPlaying || !forecastSnapshot) return
+    const lastFrameIndex = forecastSnapshot.frames.length - 1
+    const timer = window.setTimeout(() => {
+      if (forecastFrameIndex >= lastFrameIndex) {
+        setForecastPlaying(false)
+        return
+      }
+      setForecastFrameIndex(forecastFrameIndex + 1)
+    }, 850)
+    return () => window.clearTimeout(timer)
+  }, [forecastFrameIndex, forecastPlaying, forecasting, forecastSnapshot])
 
   async function handleCrowdRefresh() {
     const refreshedSnapshot = await refreshCrowd()
@@ -447,40 +417,38 @@ function App() {
     )
   }
 
+  async function startCrowdForecast() {
+    setStatusMessage('Preparing the next six hours of crowd activity...')
+    const nextForecast = await loadForecast()
+    if (!nextForecast || nextForecast.frames.length === 0) {
+      setStatusMessage('The crowd forecast is currently unavailable.')
+      return
+    }
+
+    setActiveCategory(null)
+    setRoutePlanningActive(false)
+    setNavigationActive(false)
+    setCrowdLayerMode('heatmap')
+    setSelectedPedestrianSensorId(null)
+    setForecastFrameIndex(0)
+    setForecasting(true)
+    setForecastPlaying(true)
+    setStatusMessage(
+      `Showing a six-hour forecast from ${nextForecast.sensorCount} sensor locations.`,
+    )
+  }
+
+  function exitCrowdForecast() {
+    setForecasting(false)
+    setForecastPlaying(false)
+    setForecastFrameIndex(0)
+    resetForecast()
+    setStatusMessage('Live crowd heatmap restored.')
+  }
+
   function handleCrowdLayerModeChange(mode: CrowdLayerMode) {
     setCrowdLayerMode(mode)
     setSelectedPedestrianSensorId(null)
-  }
-
-  function openAuthPanel(mode: 'login' | 'register' = 'login') {
-    setAuthPanelMode(mode)
-    setAuthPanelOpen(true)
-  }
-
-  function handleAuthenticated(auth: StoredAuth) {
-    setAuthState(auth)
-    setStatusMessage(`Logged in as ${auth.user.email ?? 'QuietMel user'}.`)
-  }
-
-  function handleLoggedOut() {
-    setAuthState(null)
-    setStatusMessage('You have logged out.')
-  }
-
-  async function handleLogout() {
-    if (!authState || loggingOut) return
-
-    setLoggingOut(true)
-
-    try {
-      await logoutAuth(authState.session.accessToken)
-    } catch {
-      // Clear local authentication when the remote session already expired.
-    } finally {
-      clearStoredAuth()
-      setLoggingOut(false)
-      handleLoggedOut()
-    }
   }
 
   function handleCategoryChange(category: PlaceCategoryId) {
@@ -497,8 +465,6 @@ function App() {
   }
 
   function handleVisibleCategoriesChange(categories: PlaceCategoryId[]) {
-    const requestId = preferenceSaveSequence.current + 1
-    preferenceSaveSequence.current = requestId
     const savedLocally = saveLocalMapPreferences(categories)
     setVisibleCategories(savedLocally.quickPlaceCategories)
 
@@ -509,25 +475,7 @@ function App() {
       setActiveCategory(null)
     }
 
-    if (!authState) {
-      setPreferenceStatus('saved')
-      return
-    }
-
-    setPreferenceStatus('saving')
-    void saveCloudMapPreferences(
-      authState.session.accessToken,
-      savedLocally.quickPlaceCategories,
-    )
-      .then((saved) => {
-        if (preferenceSaveSequence.current !== requestId) return
-        setVisibleCategories(saved)
-        saveLocalMapPreferences(saved, true)
-        setPreferenceStatus('saved')
-      })
-      .catch(() => {
-        if (preferenceSaveSequence.current === requestId) setPreferenceStatus('error')
-      })
+    setPreferenceStatus('saved')
   }
 
   function showComingSoon(feature: string) {
@@ -627,7 +575,7 @@ function App() {
         </button>
       </aside>
 
-      <section className={`map-region${routePlanningActive ? ` map-region--planning map-region--route-sheet-${routeSheetState}` : ''}${navigationActive ? ' map-region--navigating' : ''}${activeCategory ? ' map-region--places' : ''}`} aria-label="Explore places">
+      <section className={`map-region${routePlanningActive ? ` map-region--planning map-region--route-sheet-${routeSheetState}` : ''}${navigationActive ? ' map-region--navigating' : ''}${activeCategory ? ' map-region--places' : ''}${forecasting ? ' map-region--forecasting' : ''}`} aria-label="Explore places">
         <Suspense
           fallback={
             <div className="map-loading" role="status">
@@ -646,7 +594,7 @@ function App() {
             navigationRouteId={navigationRouteId}
             reroutePreviewVisible={reroutePromptVisible}
             activePlaceCategory={activeCategory}
-            crowdPoints={crowdSnapshot?.points ?? []}
+            crowdPoints={displayedCrowdPoints}
             pedestrianSensors={pedestrianSensors}
             crowdLayerMode={crowdLayerMode}
             selectedPedestrianSensorId={selectedPedestrianSensorId}
@@ -677,7 +625,7 @@ function App() {
           />
         ) : null}
 
-        {!activeCategory ? <aside className="sensory-pressure-legend" aria-label="Live pedestrian activity heatmap legend">
+        {!activeCategory && !forecasting ? <aside className="sensory-pressure-legend" aria-label="Live pedestrian activity heatmap legend">
           <div className="sensory-pressure-legend__heading">
             <div>
               <strong>Crowd level</strong>
@@ -696,6 +644,17 @@ function App() {
                         : 'Waiting for live data'}
               </span>
             </div>
+            {!routePlanningActive && !navigationActive ? (
+              <button
+                type="button"
+                className="sensory-pressure-legend__forecast"
+                disabled={forecastLoading}
+                onClick={() => void startCrowdForecast()}
+              >
+                <Clock3 aria-hidden="true" />
+                {forecastLoading ? 'Loading...' : 'Forecast'}
+              </button>
+            ) : null}
           </div>
           <div className="sensory-pressure-legend__scale" aria-hidden="true" />
           <div className="sensory-pressure-legend__labels">
@@ -712,6 +671,17 @@ function App() {
           </a>
         </aside> : null}
 
+        {forecasting && forecastSnapshot ? (
+          <ForecastControls
+            snapshot={forecastSnapshot}
+            activeFrameIndex={forecastFrameIndex}
+            playing={forecastPlaying}
+            onFrameChange={setForecastFrameIndex}
+            onPlayingChange={setForecastPlaying}
+            onClose={exitCrowdForecast}
+          />
+        ) : null}
+
         <div className="desktop-search-panel">
           <SearchField
             id="desktop-search"
@@ -721,7 +691,7 @@ function App() {
           />
         </div>
 
-        {!routePlanningActive ? (
+        {!routePlanningActive && !forecasting ? (
           <CategoryBar
             className="desktop-category-bar"
             activeCategory={activeCategory}
@@ -732,64 +702,6 @@ function App() {
             onVisibleCategoriesChange={handleVisibleCategoriesChange}
           />
         ) : null}
-
-        <details className={`desktop-profile${authState ? ' desktop-profile--authenticated' : ''}`}>
-          <summary aria-label="Open account menu">
-            {userInitial ? <span aria-hidden="true">{userInitial}</span> : <UserRound aria-hidden="true" size={21} strokeWidth={1.8} />}
-          </summary>
-          <nav className="desktop-profile__menu" aria-label="Account options">
-            <span>{authState?.user.email ?? 'Account'}</span>
-            {authState ? (
-              <>
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.currentTarget.closest('details')?.removeAttribute('open')
-                    openAuthPanel('login')
-                  }}
-                >
-                  <Settings aria-hidden="true" size={16} />
-                  Settings
-                </button>
-                <button
-                  type="button"
-                  className="desktop-profile__logout"
-                  disabled={loggingOut}
-                  onClick={(event) => {
-                    event.currentTarget.closest('details')?.removeAttribute('open')
-                    void handleLogout()
-                  }}
-                >
-                  {loggingOut ? <PulseLoader label="Logging out" /> : <LogOut aria-hidden="true" size={16} />}
-                  {loggingOut ? 'Logging out…' : 'Log out'}
-                </button>
-              </>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.currentTarget.closest('details')?.removeAttribute('open')
-                    openAuthPanel('login')
-                  }}
-                >
-                  <LogIn aria-hidden="true" size={16} />
-                  Log in
-                </button>
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.currentTarget.closest('details')?.removeAttribute('open')
-                    openAuthPanel('register')
-                  }}
-                >
-                  <UserPlus aria-hidden="true" size={16} />
-                  Create account
-                </button>
-              </>
-            )}
-          </nav>
-        </details>
 
         <div className="mobile-map-header">
           <div className="mobile-search-row">
@@ -820,66 +732,9 @@ function App() {
                 <Search aria-hidden="true" size={21} />
               </button>
             </form>
-            <details className={`mobile-profile${authState ? ' mobile-profile--authenticated' : ''}`}>
-              <summary className="mobile-avatar" aria-label="Open account menu">
-                {userInitial ?? 'Q'}
-              </summary>
-              <nav className="mobile-profile__menu" aria-label="Account options">
-                <span>{authState?.user.email ?? 'Account'}</span>
-                {authState ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.currentTarget.closest('details')?.removeAttribute('open')
-                        openAuthPanel('login')
-                      }}
-                    >
-                      <Settings aria-hidden="true" size={16} />
-                      Settings
-                    </button>
-                    <button
-                      type="button"
-                      className="mobile-profile__logout"
-                      disabled={loggingOut}
-                      onClick={(event) => {
-                        event.currentTarget.closest('details')?.removeAttribute('open')
-                        void handleLogout()
-                      }}
-                    >
-                      {loggingOut ? <PulseLoader label="Logging out" /> : <LogOut aria-hidden="true" size={16} />}
-                      {loggingOut ? 'Logging out…' : 'Log out'}
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.currentTarget.closest('details')?.removeAttribute('open')
-                        openAuthPanel('login')
-                      }}
-                    >
-                      <LogIn aria-hidden="true" size={16} />
-                      Log in
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.currentTarget.closest('details')?.removeAttribute('open')
-                        openAuthPanel('register')
-                      }}
-                    >
-                      <UserPlus aria-hidden="true" size={16} />
-                      Create account
-                    </button>
-                  </>
-                )}
-              </nav>
-            </details>
           </div>
 
-          {!routePlanningActive ? (
+          {!routePlanningActive && !forecasting ? (
             <CategoryBar
               className="mobile-category-bar"
               activeCategory={activeCategory}
@@ -892,7 +747,7 @@ function App() {
           ) : null}
         </div>
 
-        {!activeCategory ? (
+        {!activeCategory && !forecasting ? (
           <>
             <MapLayersControl
               mode={crowdLayerMode}
@@ -947,23 +802,7 @@ function App() {
             </span>
             <span>Saved</span>
           </button>
-          <button className="mobile-nav__item" type="button" onClick={() => openAuthPanel('login')}>
-            <span className="mobile-nav__icon">
-              <UserRound aria-hidden="true" size={23} />
-            </span>
-            <span>{authState ? 'Account' : 'Profile'}</span>
-          </button>
         </nav>
-
-        {authPanelOpen ? (
-          <AuthPanel
-            auth={authState}
-            initialMode={authPanelMode}
-            open
-            onAuthenticated={handleAuthenticated}
-            onClose={() => setAuthPanelOpen(false)}
-          />
-        ) : null}
 
         <p className="sr-only" role="status" aria-live="polite">
           {statusMessage}

@@ -5,6 +5,10 @@ import {
   getLiveCrowdSnapshot,
   getPedestrianSensorCatalogue,
 } from '../services/crowd.js'
+import {
+  ForecastUnavailableError,
+  getCrowdForecast,
+} from '../services/forecast.js'
 
 export const crowdRouter = Router()
 
@@ -45,6 +49,22 @@ crowdRouter.get('/sensors', async (_request, response) => {
         error instanceof Error
           ? error.message
           : 'Pedestrian sensor locations are unavailable.',
+    })
+  }
+})
+
+crowdRouter.get('/forecast', async (_request, response) => {
+  try {
+    const forecast = await getCrowdForecast()
+    response.setHeader('Cache-Control', 'no-store')
+    response.json(forecast)
+  } catch (error) {
+    response.status(error instanceof ForecastUnavailableError ? 503 : 500).json({
+      error: 'crowd_forecast_unavailable',
+      message:
+        error instanceof Error
+          ? error.message
+          : 'Crowd forecast data is unavailable.',
     })
   }
 })

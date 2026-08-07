@@ -212,6 +212,15 @@ function getCrowdColor(intensity: number) {
 
 function LiveCrowdHeatmap({ points }: { points: LiveCrowdPoint[] }) {
   const map = useMap()
+  const pointsRef = useRef<LiveCrowdPoint[]>([])
+  const schedulePaintRef = useRef<() => void>(() => undefined)
+
+  useEffect(() => {
+    pointsRef.current = [...points].sort(
+      (first, second) => first.intensity - second.intensity,
+    )
+    schedulePaintRef.current()
+  }, [points])
 
   useEffect(() => {
     if (!map) return
@@ -266,9 +275,8 @@ function LiveCrowdHeatmap({ points }: { points: LiveCrowdPoint[] }) {
         ? 0.5 - 0.5 * Math.cos((timestamp / PULSE_DURATION) * Math.PI * 2)
         : 0
 
-      for (const point of [...points].sort(
-        (first, second) => first.intensity - second.intensity,
-      )) {
+      for (const point of pointsRef.current) {
+        if (point.pedestriansPerMinute <= 0 || point.intensity <= 0) continue
         const intensity = point.intensity
         const pixel = projection.fromLatLngToContainerPixel(
           new google.maps.LatLng(point.latitude, point.longitude),
@@ -343,6 +351,7 @@ function LiveCrowdHeatmap({ points }: { points: LiveCrowdPoint[] }) {
     const schedulePaint = () => {
       if (!frame) frame = window.requestAnimationFrame(paint)
     }
+    schedulePaintRef.current = schedulePaint
     overlay.onAdd = () => {
       canvas = document.createElement('canvas')
       canvas.className = 'sensory-pressure-canvas'
@@ -362,6 +371,7 @@ function LiveCrowdHeatmap({ points }: { points: LiveCrowdPoint[] }) {
       document.removeEventListener('visibilitychange', schedulePaint)
       if (frame) window.cancelAnimationFrame(frame)
       frame = 0
+      schedulePaintRef.current = () => undefined
       canvas?.remove()
       canvas = null
     }
@@ -370,7 +380,7 @@ function LiveCrowdHeatmap({ points }: { points: LiveCrowdPoint[] }) {
     return () => {
       overlay.setMap(null)
     }
-  }, [map, points])
+  }, [map])
 
   return null
 }

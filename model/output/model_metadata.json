@@ -1,0 +1,38 @@
+{
+  "model_version": "hourly-gradient-v1",
+  "generated_at": "2026-08-07T12:00:00+10:00",
+  "timezone": "Australia/Melbourne",
+  "source_dataset": "pedestrian-counting-system-monthly-counts-per-hour",
+  "source_url": "https://data.melbourne.vic.gov.au/explore/dataset/pedestrian-counting-system-monthly-counts-per-hour/",
+  "source_start_date": "2024-08-07",
+  "source_end_date": "2026-08-06",
+  "input_row_count": 1614110,
+  "clean_row_count": 1614110,
+  "dropped_row_count": 0,
+  "duplicate_group_count": 0,
+  "complete_duplicate_row_count": 0,
+  "conflicting_duplicate_group_count": 0,
+  "sensor_count": 100,
+  "profile_row_count": 67200,
+  "quality_counts": {
+    "ok": 64381,
+    "low_sample": 1327,
+    "fallback": 1492
+  },
+  "unit": "persons_per_minute",
+  "day_of_week_convention": "0=Sunday,...,6=Saturday",
+  "season_convention": "Australian meteorological seasons",
+  "gradient_method": "next_hour_baseline_minus_current_hour_baseline",
+  "dropped_parse_date_count": 0,
+  "dropped_invalid_hour_count": 0,
+  "dropped_invalid_count_count": 0,
+  "dropped_out_of_range_count": 0,
+  "training_window_mode": "current_available_data",
+  "requested_start_date": null,
+  "requested_end_date": null,
+  "excluded_location_ids": [
+    "28",
+    "65",
+    "78"
+  ]
+}
