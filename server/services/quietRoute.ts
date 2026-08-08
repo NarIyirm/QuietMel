@@ -98,8 +98,8 @@ function samplePath(path: RouteCoordinate[]): SamplePoint[] {
       distanceAlongMeters: targetDistance,
     })
   }
-  const last = path.at(-1)
-  if (last && samples.at(-1)?.distanceAlongMeters !== totalDistance) {
+  const last = path[path.length - 1]
+  if (last && samples[samples.length - 1]?.distanceAlongMeters !== totalDistance) {
     samples.push({ ...last, distanceAlongMeters: totalDistance })
   }
   return samples

@@ -240,7 +240,7 @@ export async function getCrowdForecast(startValue = new Date()): Promise<CrowdFo
   return {
     generatedAt: new Date().toISOString(),
     startsAt: frameTimes[0].toISOString(),
-    endsAt: frameTimes.at(-1)?.toISOString() ?? frameTimes[0].toISOString(),
+    endsAt: frameTimes[frameTimes.length - 1]?.toISOString() ?? frameTimes[0].toISOString(),
     timezone: TIMEZONE,
     horizonHours: FORECAST_HOURS,
     intervalMinutes: FRAME_INTERVAL_MINUTES,
