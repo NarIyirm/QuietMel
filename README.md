@@ -99,6 +99,19 @@ The Express forecast service reads profiles exclusively from the Supabase
 table. The versioned CSV is only a training/import artifact and is never used
 as a runtime fallback.
 
+### Quiet walking routes
+
+The route search asks for browser location access on first load and always
+allows a manual starting point when access is unavailable. Both start and
+destination fields use Google Place Autocomplete (New).
+
+The Maps JavaScript Routes library requests walking alternatives and keeps the
+full Google path and navigation steps in the current page session. The browser
+sends compact route geometry to `POST /api/routes/quiet`; Express combines the
+cached live pedestrian snapshot with the Supabase six-hour forecast, rejects
+detours over 25% or ten minutes, and returns one recommended route. Locations
+and calculated routes are not persisted.
+
 ## Commands
 
 - `npm run dev`: start the Vite development server

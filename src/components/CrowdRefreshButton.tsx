@@ -1,6 +1,5 @@
 import { useId } from 'react'
-
-import { PulseLoader } from './PulseLoader'
+import { RefreshCw } from 'lucide-react'
 
 type CrowdRefreshButtonProps = {
   refreshing: boolean
@@ -58,15 +57,16 @@ export function CrowdRefreshButton({
     <button
       type="button"
       className="crowd-refresh-button"
+      data-tour="refresh"
       aria-label={refreshing ? 'Refreshing live crowd data' : 'Refresh live crowd data'}
       title="Refresh live crowd data"
       disabled={refreshing}
       onClick={onRefresh}
     >
       {refreshing ? (
-        <PulseLoader label="Refreshing live crowd data" />
-      ) : (
         <CloudRefreshIcon />
+      ) : (
+        <RefreshCw aria-hidden="true" size={21} />
       )}
     </button>
   )

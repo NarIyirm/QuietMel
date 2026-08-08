@@ -1,4 +1,4 @@
-import { lazy, Suspense, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   BookOpen,
   Bookmark,
@@ -9,28 +9,26 @@ import {
   Landmark,
   MapPin,
   MapPinned,
-  Menu,
-  Mic,
   Minus,
   Navigation,
   Palette,
   Plus,
-  Search,
   Settings,
   SlidersHorizontal,
   Trees,
   UsersRound,
-  Waves,
   X,
   type LucideIcon,
 } from 'lucide-react'
 import { CrowdRefreshButton } from './components/CrowdRefreshButton'
+import { AppSettings, type LanguageChoice, type ThemeChoice } from './components/AppSettings'
+import { OnboardingTour } from './components/OnboardingTour'
 import { ForecastControls } from './components/ForecastControls'
 import { MapLayersControl } from './components/MapLayersControl'
 import { RoutePlanner, type RouteSheetState } from './components/RoutePlanner'
-import { NavigationDemo } from './components/NavigationDemo'
+import { ActiveNavigation } from './components/ActiveNavigation'
+import { RouteSearchPanel } from './components/RouteSearchPanel'
 import { type DemoRouteId, type NavigationRouteId } from './data/demoRoutes'
-import { PLACES } from './data/places'
 import { useLiveCrowd } from './hooks/useLiveCrowd'
 import { useCrowdForecast } from './hooks/useCrowdForecast'
 import { usePedestrianSensors } from './hooks/usePedestrianSensors'
@@ -40,6 +38,13 @@ import type {
   PedestrianSensor,
 } from './lib/crowd'
 import { readLocalMapPreferences, saveLocalMapPreferences } from './lib/mapPreferences'
+import {
+  scoreQuietRouteCandidates,
+  type PlaceSelection,
+  type QuietRoute,
+  type QuietRouteCandidate,
+  type RouteCoordinate,
+} from './lib/quietRoute'
 import {
   DEFAULT_PLACE_CATEGORY_IDS,
   PLACE_CATEGORIES,
@@ -61,85 +66,6 @@ const CATEGORY_ICONS: Record<PlaceCategoryId, LucideIcon> = {
   'picnic-areas': Trees,
   'visitor-centres': MapPinned,
   'places-of-worship': Landmark,
-}
-
-function BrandMark({ compact = false }: { compact?: boolean }) {
-  return (
-    <span className={compact ? 'brand-mark brand-mark--compact' : 'brand-mark'} aria-hidden="true">
-      <Leaf className="brand-mark__leaf" strokeWidth={2.4} />
-      <Waves className="brand-mark__waves" strokeWidth={2.2} />
-    </span>
-  )
-}
-
-type SearchFieldProps = {
-  id: string
-  query: string
-  onQueryChange: (value: string) => void
-  onSearch: () => void
-}
-
-function SearchField({ id, query, onQueryChange, onSearch }: SearchFieldProps) {
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    onSearch()
-  }
-
-  return (
-    <form className="search-orb-container" role="search" onSubmit={handleSubmit}>
-      <div className="gooey-background-layer" aria-hidden="true">
-        <div className="blob blob-1" />
-        <div className="blob blob-2" />
-        <div className="blob blob-3" />
-        <div className="blob-bridge" />
-      </div>
-
-      <div className="input-overlay">
-        <button type="submit" className="search-icon-wrapper" aria-label="Plan route">
-          <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="search-icon"
-          >
-            <circle cx="11" cy="11" r="8" />
-            <line x1="21" y1="21" x2="16.65" y2="16.65" />
-          </svg>
-        </button>
-        <label className="sr-only" htmlFor={id}>
-          Search quiet places
-        </label>
-        <input
-          id={id}
-          type="search"
-          className="modern-input"
-          value={query}
-          placeholder="Search quiet places"
-          autoComplete="off"
-          onChange={(event) => onQueryChange(event.target.value)}
-        />
-        <div className="focus-indicator" aria-hidden="true" />
-      </div>
-
-      <svg className="gooey-svg-filter" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-        <defs>
-          <filter id="enhanced-goo">
-            <feGaussianBlur in="SourceGraphic" stdDeviation="12" result="blur" />
-            <feColorMatrix
-              in="blur"
-              mode="matrix"
-              values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 20 -10"
-              result="goo"
-            />
-            <feComposite in="SourceGraphic" in2="goo" operator="atop" />
-          </filter>
-        </defs>
-      </svg>
-    </form>
-  )
 }
 
 type CategoryBarProps = {
@@ -290,7 +216,6 @@ function CategoryBar({
 }
 
 function App() {
-  const [query, setQuery] = useState('')
   const [activeCategory, setActiveCategory] = useState<PlaceCategoryId | null>(null)
   const [visibleCategories, setVisibleCategories] = useState<PlaceCategoryId[]>(
     () => readLocalMapPreferences().quickPlaceCategories,
@@ -298,8 +223,15 @@ function App() {
   const [preferenceStatus, setPreferenceStatus] = useState<
     'idle' | 'saving' | 'saved' | 'error'
   >('idle')
-  const [selectedPlaceId, setSelectedPlaceId] = useState(PLACES[0].id)
-  const [locateRequest, setLocateRequest] = useState(0)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [theme, setTheme] = useState<ThemeChoice>(() => localStorage.getItem('quietmel:theme') === 'dark' ? 'dark' : 'original')
+  const [language, setLanguage] = useState<LanguageChoice>(() => (localStorage.getItem('quietmel:language') as LanguageChoice | null) ?? 'en')
+  const [tourOpen, setTourOpen] = useState(() => localStorage.getItem('quietmel:onboarding-complete') !== 'true')
+  const [tourSession, setTourSession] = useState(0)
+  const [locateRequest, setLocateRequest] = useState(1)
+  const [userPosition, setUserPosition] = useState<RouteCoordinate | null>(null)
+  const [locating, setLocating] = useState(true)
+  const [mapsReady, setMapsReady] = useState(false)
   const [crowdLayerMode, setCrowdLayerMode] = useState<CrowdLayerMode>('heatmap')
   const [selectedPedestrianSensorId, setSelectedPedestrianSensorId] = useState<number | null>(null)
   const [forecasting, setForecasting] = useState(false)
@@ -308,13 +240,18 @@ function App() {
   const [zoomRequest, setZoomRequest] = useState({ id: 0, delta: 0 })
   const [statusMessage, setStatusMessage] = useState('')
   const [routePlanningActive, setRoutePlanningActive] = useState(false)
-  const [plannedDestination, setPlannedDestination] = useState('')
+  const [routePlanningLoading, setRoutePlanningLoading] = useState(false)
+  const [nearbyQuietLoading, setNearbyQuietLoading] = useState(false)
+  const [nearbyQuietFeedback, setNearbyQuietFeedback] = useState<string | null>(null)
+  const [locationPermissionNotice, setLocationPermissionNotice] = useState(false)
+  const [quietRoute, setQuietRoute] = useState<QuietRoute | null>(null)
+  const [quietRouteOptions, setQuietRouteOptions] = useState<QuietRoute[]>([])
   const [selectedRouteId, setSelectedRouteId] = useState<DemoRouteId>('quietest')
   const [navigationActive, setNavigationActive] = useState(false)
-  const [navigationRouteId, setNavigationRouteId] = useState<NavigationRouteId>('quietest')
-  const [reroutePromptVisible, setReroutePromptVisible] = useState(false)
-  const [rerouteHandled, setRerouteHandled] = useState(false)
+  const navigationRouteId: NavigationRouteId = 'quietest'
+  const reroutePromptVisible = false
   const [routeSheetState, setRouteSheetState] = useState<RouteSheetState>('medium')
+  const routeRequestRef = useRef<AbortController | null>(null)
   const {
     snapshot: crowdSnapshot,
     loading: crowdLoading,
@@ -330,24 +267,31 @@ function App() {
   } = useCrowdForecast()
   const { catalogue: sensorCatalogue } = usePedestrianSensors()
 
-  const visiblePlaces = useMemo(() => {
-    const normalizedQuery = query.trim().toLocaleLowerCase()
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    localStorage.setItem('quietmel:theme', theme)
+  }, [theme])
 
-    return PLACES.filter((place) => {
-      const matchesQuery =
-        normalizedQuery.length === 0 ||
-        place.name.toLocaleLowerCase().includes(normalizedQuery) ||
-        place.categoryLabel.toLocaleLowerCase().includes(normalizedQuery)
+  useEffect(() => {
+    document.documentElement.lang = language
+    localStorage.setItem('quietmel:language', language)
+  }, [language])
 
-      if (!matchesQuery) return false
-      return true
-    })
-  }, [query])
+  function closeTour() {
+    setTourOpen(false)
+    localStorage.setItem('quietmel:onboarding-complete', 'true')
+  }
 
-  const selectedPlace =
-    visiblePlaces.find((place) => place.id === selectedPlaceId) ??
-    visiblePlaces[0] ??
-    PLACES[0]
+  function restartTour() {
+    setSettingsOpen(false)
+    setNavigationActive(false)
+    setRoutePlanningActive(false)
+    setForecasting(false)
+    setActiveCategory(null)
+    localStorage.removeItem('quietmel:onboarding-complete')
+    setTourSession((session) => session + 1)
+    setTourOpen(true)
+  }
   const pedestrianSensors = useMemo<PedestrianSensor[]>(() => {
     if (sensorCatalogue?.sensors.length) return sensorCatalogue.sensors
     return (crowdSnapshot?.points ?? []).map((point) => ({
@@ -452,6 +396,11 @@ function App() {
   }
 
   function handleCategoryChange(category: PlaceCategoryId) {
+    if (!userPosition) {
+      setStatusMessage('Location access is required to search for nearby places. Please allow location access.')
+      requestLocation()
+      return
+    }
     setActiveCategory(category)
     setSelectedPedestrianSensorId(null)
     setStatusMessage(
@@ -482,99 +431,289 @@ function App() {
     setStatusMessage(`${feature} will be added in a later version.`)
   }
 
-  function startRoutePlanning() {
-    const destination = query.trim()
-    if (!destination) {
-      setStatusMessage('Enter a destination to compare routes.')
-      return
-    }
-
-    setPlannedDestination(destination)
-    setSelectedRouteId('quietest')
-    setRoutePlanningActive(true)
-    setRouteSheetState('medium')
-    setActiveCategory(null)
-    setStatusMessage(`Showing three demo routes to ${destination}.`)
-  }
-
   const selectRoute = useCallback((routeId: DemoRouteId) => {
     setSelectedRouteId(routeId)
   }, [])
 
-  useEffect(() => {
-    if (!navigationActive || rerouteHandled) return
+  const handleMapReady = useCallback(() => setMapsReady(true), [])
 
-    const timer = window.setTimeout(() => {
-      setReroutePromptVisible(true)
-      setStatusMessage('Swanston Street is getting crowded. A calmer reroute is available.')
-    }, 8000)
-    return () => window.clearTimeout(timer)
-  }, [navigationActive, rerouteHandled])
+  const handleUserPositionChange = useCallback((position: RouteCoordinate | null) => {
+    setUserPosition(position)
+    setLocating(false)
+    if (position) setLocationPermissionNotice(false)
+  }, [])
+
+  const handleLocationStatus = useCallback((message: string) => {
+    setStatusMessage(message)
+    if (message.includes('Location access was not available')) {
+      setLocationPermissionNotice(true)
+    }
+  }, [])
+
+  function requestLocation() {
+    setLocating(true)
+    setLocateRequest((request) => request + 1)
+  }
+
+  async function planQuietRoute(origin: PlaceSelection, destination: PlaceSelection) {
+    routeRequestRef.current?.abort()
+    const controller = new AbortController()
+    routeRequestRef.current = controller
+    setRoutePlanningLoading(true)
+    setNearbyQuietLoading(false)
+    setRoutePlanningActive(false)
+    setNavigationActive(false)
+    setQuietRoute(null)
+    setQuietRouteOptions([])
+    setActiveCategory(null)
+    setForecasting(false)
+    setStatusMessage(`Comparing quiet walking routes to ${destination.label}…`)
+
+    try {
+      const { Route } = await google.maps.importLibrary('routes')
+      const result = await Route.computeRoutes({
+        origin: origin.location,
+        destination: destination.location,
+        travelMode: 'WALKING',
+        computeAlternativeRoutes: true,
+        fields: ['path', 'distanceMeters', 'durationMillis', 'legs', 'viewport'],
+        language: 'en-AU',
+        region: 'au',
+        units: google.maps.UnitSystem.METRIC,
+      })
+      if (controller.signal.aborted) return
+
+      const candidates: QuietRouteCandidate[] = (result.routes ?? []).flatMap((route, index) => {
+        const path = route.path?.map((point) => ({ lat: point.lat, lng: point.lng })) ?? []
+        const durationMinutes = (route.durationMillis ?? 0) / 60_000
+        const distanceMeters = route.distanceMeters ?? 0
+        if (path.length < 2 || durationMinutes <= 0 || distanceMeters <= 0) return []
+        return [{
+          id: `google-route-${index + 1}`,
+          durationMinutes,
+          distanceMeters,
+          path,
+          steps: (route.legs ?? []).flatMap((leg) =>
+            leg.steps.map((step) => ({
+              instruction: (step.instructions || 'Continue walking').replace(/<[^>]*>/g, ''),
+              distanceMeters: step.distanceMeters,
+              durationMinutes: (step.staticDurationMillis ?? 0) / 60_000,
+              maneuver: step.maneuver,
+            })),
+          ),
+        }]
+      })
+      if (candidates.length === 0) {
+        throw new Error('Google Maps did not return a walking route for these places.')
+      }
+
+      const selection = await scoreQuietRouteCandidates(candidates, controller.signal)
+      if (controller.signal.aborted) return
+      const routesById = new Map(candidates.map((candidate) => [candidate.id, candidate]))
+      const scoredRoutes = selection.scores.flatMap((score, index) => {
+        const candidate = routesById.get(score.routeId)
+        if (!candidate) return []
+        return [{
+          ...candidate,
+          origin,
+          destination,
+          candidateCount: selection.candidateCount,
+          modelVersion: selection.modelVersion,
+          generatedAt: selection.generatedAt,
+          score,
+          priority: index + 1,
+          planType: 'crowd-ranked' as const,
+        }]
+      })
+      const selected = scoredRoutes.find((route) => route.id === selection.selectedRouteId)
+      if (!selected) throw new Error('The recommended route could not be matched to the map.')
+
+      setQuietRouteOptions(scoredRoutes)
+      setQuietRoute(selected)
+      setRouteSheetState('medium')
+      setRoutePlanningActive(true)
+      setStatusMessage(
+        `Quiet route ready: ${Math.round(selected.durationMinutes)} minutes to ${destination.label}.`,
+      )
+    } catch (error) {
+      if (controller.signal.aborted) return
+      setStatusMessage(
+        error instanceof Error
+          ? error.message
+          : 'A quiet walking route could not be calculated.',
+      )
+    } finally {
+      if (routeRequestRef.current === controller) {
+        routeRequestRef.current = null
+        setRoutePlanningLoading(false)
+      }
+    }
+  }
+
+  useEffect(() => () => routeRequestRef.current?.abort(), [])
 
   function startNavigation() {
-    setNavigationRouteId(selectedRouteId)
+    if (!quietRoute) return
     setRoutePlanningActive(false)
     setNavigationActive(true)
-    setReroutePromptVisible(false)
-    setRerouteHandled(false)
-    setStatusMessage('Demo navigation started.')
+    setStatusMessage(`Navigation started to ${quietRoute.destination.label}.`)
   }
 
-  function switchToReroute() {
-    setNavigationRouteId('reroute')
-    setReroutePromptVisible(false)
-    setRerouteHandled(true)
-    setStatusMessage('Switched to the calmer reroute.')
-  }
-
-  function keepCurrentRoute() {
-    setReroutePromptVisible(false)
-    setRerouteHandled(true)
-    setStatusMessage('Continuing on the current route.')
+  function selectQuietRouteOption(routeId: string) {
+    const selected = quietRouteOptions.find((route) => route.id === routeId)
+    if (!selected || selected.id === quietRoute?.id) return
+    setQuietRoute(selected)
+    setStatusMessage(
+      `Route ${selected.priority} selected: ${Math.round(selected.durationMinutes)} minutes to ${selected.destination.label}.`,
+    )
   }
 
   function endNavigation() {
     setNavigationActive(false)
-    setReroutePromptVisible(false)
-    setRerouteHandled(true)
     setRoutePlanningActive(true)
-    setStatusMessage('Navigation ended. Route options are shown again.')
+    setStatusMessage('Navigation ended. Your route summary is shown again.')
+  }
+
+  function requestCurrentPosition() {
+    return new Promise<RouteCoordinate>((resolve, reject) => {
+      if (!navigator.geolocation) {
+        reject(new Error('Location is not available in this browser.'))
+        return
+      }
+      navigator.geolocation.getCurrentPosition(
+        ({ coords }) => resolve({ lat: coords.latitude, lng: coords.longitude }),
+        () => reject(new Error('Location access is needed to find a nearby quiet place.')),
+        { enableHighAccuracy: true, timeout: 8_000, maximumAge: 30_000 },
+      )
+    })
+  }
+
+  async function findNearbyQuietPlace() {
+    if (nearbyQuietLoading) return
+    const controller = new AbortController()
+    routeRequestRef.current?.abort()
+    routeRequestRef.current = controller
+    setNearbyQuietLoading(true)
+    setRoutePlanningLoading(false)
+    setNearbyQuietFeedback('Getting your location…')
+    setStatusMessage('Finding the nearest quiet area…')
+
+    try {
+      const originLocation = userPosition ?? await requestCurrentPosition()
+      if (controller.signal.aborted) return
+      setUserPosition(originLocation)
+      setLocating(false)
+      setNearbyQuietFeedback('Looking for nearby parks, cafés and libraries…')
+      const { Place } = await google.maps.importLibrary('places')
+      const nearbyPlaces = await Place.searchNearby({
+        fields: ['id', 'displayName', 'formattedAddress', 'location', 'primaryTypeDisplayName'],
+        includedTypes: [
+          'park', 'city_park', 'garden', 'botanical_garden', 'library', 'cafe',
+          'coffee_shop', 'book_store', 'art_gallery',
+        ],
+        locationRestriction: { center: originLocation, radius: 4_000 },
+        maxResultCount: 20,
+        rankPreference: 'DISTANCE',
+        language: 'en-AU',
+        region: 'AU',
+      })
+      if (controller.signal.aborted) return
+      const nearest = nearbyPlaces.places.find((place) => place.location && place.displayName)
+      if (!nearest?.location) throw new Error('No nearby quiet places were found within 4 km.')
+      const placeLocation = nearest.location.toJSON()
+      const placeName = nearest.displayName ?? 'Nearby quiet place'
+
+      const origin: PlaceSelection = {
+        placeId: null,
+        label: 'Your location',
+        address: 'Current location',
+        location: originLocation,
+        source: 'current-location',
+      }
+      const destination: PlaceSelection = {
+        placeId: nearest.id ?? null,
+        label: placeName,
+        address: nearest.formattedAddress ?? 'Nearby quiet place',
+        location: placeLocation,
+        source: 'google-place',
+      }
+      const { Route } = await google.maps.importLibrary('routes')
+      const result = await Route.computeRoutes({
+        origin: origin.location,
+        destination: destination.location,
+        travelMode: 'WALKING',
+        fields: ['path', 'distanceMeters', 'durationMillis', 'legs', 'viewport'],
+        language: 'en-AU',
+        region: 'au',
+        units: google.maps.UnitSystem.METRIC,
+      })
+      if (controller.signal.aborted) return
+      const fastest = result.routes?.[0]
+      const path = fastest?.path?.map((point) => ({ lat: point.lat, lng: point.lng })) ?? []
+      const durationMinutes = (fastest?.durationMillis ?? 0) / 60_000
+      const distanceMeters = fastest?.distanceMeters ?? 0
+      if (path.length < 2 || durationMinutes <= 0 || distanceMeters <= 0) {
+        throw new Error('Google Maps did not return a walking route to this quiet area.')
+      }
+
+      const route: QuietRoute = {
+        id: `nearby-quiet-${nearest.id ?? Date.now()}`,
+        durationMinutes,
+        distanceMeters,
+        path,
+        steps: (fastest?.legs ?? []).flatMap((leg) => leg.steps.map((step) => ({
+          instruction: (step.instructions || 'Continue walking').replace(/<[^>]*>/g, ''),
+          distanceMeters: step.distanceMeters,
+          durationMinutes: (step.staticDurationMillis ?? 0) / 60_000,
+          maneuver: step.maneuver,
+        }))),
+        origin,
+        destination,
+        candidateCount: 1,
+        modelVersion: 'nearby-quiet-place',
+        generatedAt: new Date().toISOString(),
+        priority: 1,
+        planType: 'nearest-quiet',
+        score: {
+          routeId: `nearby-quiet-${nearest.id ?? 'place'}`,
+          durationMinutes: Math.round(durationMinutes * 10) / 10,
+          distanceMeters: Math.round(distanceMeters),
+          averageCrowdPpm: 0,
+          maximumCrowdPpm: 0,
+          crowdExposure: 0,
+          highCrowdPercent: 0,
+          coverageConfidence: 1,
+          extraMinutesComparedWithFastest: 0,
+          crowdReductionPercent: 0,
+          crowdLevel: 'low',
+          combinedCost: 0,
+        },
+      }
+      setQuietRouteOptions([route])
+      setQuietRoute(route)
+      setRouteSheetState('medium')
+      setRoutePlanningActive(true)
+      setNavigationActive(false)
+      setNearbyQuietFeedback(null)
+      setStatusMessage(`Fastest route ready: ${Math.round(durationMinutes)} minutes to ${placeName}.`)
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        if (error instanceof Error && error.message.includes('Location access')) {
+          setLocationPermissionNotice(true)
+        }
+        setNearbyQuietFeedback(error instanceof Error ? error.message : 'A nearby quiet place could not be found.')
+        setStatusMessage(error instanceof Error ? error.message : 'A nearby quiet place could not be found.')
+      }
+    } finally {
+      if (routeRequestRef.current === controller) {
+        routeRequestRef.current = null
+        setNearbyQuietLoading(false)
+      }
+    }
   }
 
   return (
     <main className={`map-app${navigationActive ? ' map-app--navigating' : ''}`}>
-      <aside className="desktop-rail" aria-label="Main navigation">
-        <a className="rail-brand" href="/" aria-label="QuietMel home">
-          <BrandMark />
-        </a>
-
-        <nav className="rail-navigation" aria-label="Desktop navigation">
-          <button type="button" className="rail-item" onClick={() => showComingSoon('Menu')}>
-            <Menu aria-hidden="true" />
-            <span>Menu</span>
-          </button>
-          <button type="button" className="rail-item" onClick={() => showComingSoon('Saved places')}>
-            <Bookmark aria-hidden="true" />
-            <span>Saved</span>
-          </button>
-          <button type="button" className="rail-item" onClick={() => showComingSoon('Recent places')}>
-            <Clock3 aria-hidden="true" />
-            <span>Recent</span>
-          </button>
-        </nav>
-
-        <button type="button" className="rail-place" onClick={() => setSelectedPlaceId(PLACES[0].id)}>
-          <span className="rail-place__preview">
-            <MapPinned aria-hidden="true" size={24} />
-          </span>
-          <span>{selectedPlace.name.split(' ')[0]}</span>
-        </button>
-
-        <button type="button" className="rail-settings" aria-label="Open settings" onClick={() => showComingSoon('Settings')}>
-          <Settings aria-hidden="true" size={21} />
-        </button>
-      </aside>
-
       <section className={`map-region${routePlanningActive ? ` map-region--planning map-region--route-sheet-${routeSheetState}` : ''}${navigationActive ? ' map-region--navigating' : ''}${activeCategory ? ' map-region--places' : ''}${forecasting ? ' map-region--forecasting' : ''}`} aria-label="Explore places">
         <Suspense
           fallback={
@@ -600,29 +739,40 @@ function App() {
             selectedPedestrianSensorId={selectedPedestrianSensorId}
             onPedestrianSensorSelect={setSelectedPedestrianSensorId}
             routeSheetState={routeSheetState}
-            onLocationStatus={setStatusMessage}
+            onLocationStatus={handleLocationStatus}
+            quietRoute={quietRoute}
+            quietRouteOptions={quietRouteOptions}
+            onQuietRouteSelect={selectQuietRouteOption}
+            onUserPositionChange={handleUserPositionChange}
+            onMapReady={handleMapReady}
           />
         </Suspense>
 
-        {routePlanningActive ? (
+        <button type="button" className="map-settings-button" data-tour="settings" aria-label="Open settings" onClick={() => setSettingsOpen(true)}>
+          <Settings aria-hidden="true" size={21} />
+        </button>
+        {locationPermissionNotice ? (
+          <aside className="location-permission-notice" role="alert">
+            <span>Location permission is off. Turn it on to use this feature.</span>
+            <button type="button" aria-label="Dismiss location permission notice" onClick={() => setLocationPermissionNotice(false)}>
+              <X aria-hidden="true" size={16} />
+            </button>
+          </aside>
+        ) : null}
+
+        {routePlanningActive && quietRoute ? (
           <RoutePlanner
-            destination={plannedDestination}
-            selectedRouteId={selectedRouteId}
-            onRouteSelect={selectRoute}
+            route={quietRoute}
+            routes={quietRouteOptions}
             onClose={() => setRoutePlanningActive(false)}
+            onSelectRoute={selectQuietRouteOption}
             onStartNavigation={startNavigation}
             onSheetStateChange={setRouteSheetState}
           />
         ) : null}
 
-        {navigationActive ? (
-          <NavigationDemo
-            routeId={navigationRouteId}
-            reroutePromptVisible={reroutePromptVisible}
-            onSwitchRoute={switchToReroute}
-            onKeepRoute={keepCurrentRoute}
-            onEndNavigation={endNavigation}
-          />
+        {navigationActive && quietRoute ? (
+          <ActiveNavigation route={quietRoute} onEnd={endNavigation} />
         ) : null}
 
         {!activeCategory && !forecasting ? <aside className="sensory-pressure-legend" aria-label="Live pedestrian activity heatmap legend">
@@ -682,14 +832,19 @@ function App() {
           />
         ) : null}
 
-        <div className="desktop-search-panel">
-          <SearchField
-            id="desktop-search"
-            query={query}
-            onQueryChange={setQuery}
-            onSearch={startRoutePlanning}
-          />
-        </div>
+        {!navigationActive && !forecasting ? (
+          <div className="route-search-shell" data-tour="route-search">
+            <RouteSearchPanel
+              mapsReady={mapsReady}
+              userPosition={userPosition}
+              locating={locating}
+              planning={routePlanningLoading}
+              routeReady={routePlanningActive}
+              onRequestLocation={requestLocation}
+              onPlan={(origin, destination) => void planQuietRoute(origin, destination)}
+            />
+          </div>
+        ) : null}
 
         {!routePlanningActive && !forecasting ? (
           <CategoryBar
@@ -704,36 +859,6 @@ function App() {
         ) : null}
 
         <div className="mobile-map-header">
-          <div className="mobile-search-row">
-            <form
-              className="mobile-search-field"
-              role="search"
-              onSubmit={(event) => {
-                event.preventDefault()
-                startRoutePlanning()
-              }}
-            >
-              <BrandMark compact />
-              <label className="sr-only" htmlFor="mobile-search">
-                Search quiet places
-              </label>
-              <input
-                id="mobile-search"
-                type="search"
-                value={query}
-                placeholder="Search quiet places"
-                autoComplete="off"
-                onChange={(event) => setQuery(event.target.value)}
-              />
-              <button type="button" className="mobile-search-action" aria-label="Voice search" onClick={() => showComingSoon('Voice search')}>
-                <Mic aria-hidden="true" size={21} />
-              </button>
-              <button type="submit" className="mobile-search-action" aria-label="Plan route">
-                <Search aria-hidden="true" size={21} />
-              </button>
-            </form>
-          </div>
-
           {!routePlanningActive && !forecasting ? (
             <CategoryBar
               className="mobile-category-bar"
@@ -749,27 +874,35 @@ function App() {
 
         {!activeCategory && !forecasting ? (
           <>
-            <MapLayersControl
-              mode={crowdLayerMode}
-              sensorCount={pedestrianSensors.length}
-              sensorLocationsAvailable={pedestrianSensors.length > 0}
-              onModeChange={handleCrowdLayerModeChange}
-            />
-
-            <CrowdRefreshButton
-              refreshing={crowdRefreshing}
-              onRefresh={() => void handleCrowdRefresh()}
-            />
+            <MapLayersControl mode={crowdLayerMode} sensorCount={pedestrianSensors.length} sensorLocationsAvailable={pedestrianSensors.length > 0} onModeChange={handleCrowdLayerModeChange} />
+            <CrowdRefreshButton refreshing={crowdRefreshing} onRefresh={() => void handleCrowdRefresh()} />
           </>
         ) : null}
 
         <button
           type="button"
           className="locate-button"
+          data-tour="locate"
           aria-label="Show my location"
-          onClick={() => setLocateRequest((request) => request + 1)}
+          onClick={requestLocation}
         >
           <Navigation aria-hidden="true" size={22} fill="currentColor" />
+        </button>
+        {nearbyQuietFeedback ? <p className="nearby-quiet-feedback" role="status">{nearbyQuietFeedback}</p> : null}
+
+        <button
+          type="button"
+          className={`nearby-quiet-button${nearbyQuietLoading ? ' nearby-quiet-button--loading' : ''}`}
+          data-tour="nearby-quiet"
+          aria-label="Find the nearest quiet place"
+          aria-busy={nearbyQuietLoading}
+          disabled={nearbyQuietLoading || !mapsReady}
+          onClick={() => void findNearbyQuietPlace()}
+        >
+          {nearbyQuietLoading ? (
+            <span className="nearby-quiet-button__loader" aria-hidden="true"><i /><i /><i /></span>
+          ) : <Leaf aria-hidden="true" size={19} />}
+          <span>{nearbyQuietLoading ? (language === 'zh-CN' ? '正在查找…' : 'Finding a quiet place…') : (language === 'zh-CN' ? '查找附近安静地点' : 'Find quiet nearby')}</span>
         </button>
 
         <div className="desktop-zoom-controls" aria-label="Map zoom controls">
@@ -807,6 +940,8 @@ function App() {
         <p className="sr-only" role="status" aria-live="polite">
           {statusMessage}
         </p>
+        <AppSettings open={settingsOpen} theme={theme} language={language} onClose={() => setSettingsOpen(false)} onThemeChange={setTheme} onLanguageChange={setLanguage} onRestartTutorial={restartTour} />
+        <OnboardingTour key={tourSession} open={tourOpen && mapsReady} onClose={closeTour} />
       </section>
     </main>
   )
