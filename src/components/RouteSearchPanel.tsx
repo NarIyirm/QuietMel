@@ -16,6 +16,7 @@ type RouteSearchPanelProps = {
   userPosition: RouteCoordinate | null
   locating: boolean
   planning: boolean
+  routeReady: boolean
   onRequestLocation: () => void
   onPlan: (origin: PlaceSelection, destination: PlaceSelection) => void
 }
@@ -28,6 +29,14 @@ type PlaceFieldProps = {
   mapsReady: boolean
   locationBias: RouteCoordinate | null
   icon: 'origin' | 'destination'
+  autocompleteEnabled?: boolean
+  selectOnFocus?: boolean
+  trailingAction?: {
+    label: string
+    active?: boolean
+    disabled?: boolean
+    onClick: () => void
+  }
   onValueChange: (value: string) => void
   onPlaceChange: (place: PlaceSelection | null) => void
 }
@@ -40,6 +49,9 @@ function PlaceField({
   mapsReady,
   locationBias,
   icon,
+  autocompleteEnabled = true,
+  selectOnFocus = false,
+  trailingAction,
   onValueChange,
   onPlaceChange,
 }: PlaceFieldProps) {
@@ -51,7 +63,8 @@ function PlaceField({
 
   useEffect(() => {
     const input = value.trim()
-    if (!mapsReady || input.length < 2) {
+    if (!autocompleteEnabled || !mapsReady || input.length < 2) {
+      requestSequence.current += 1
       return
     }
 
@@ -91,7 +104,7 @@ function PlaceField({
     }, 260)
 
     return () => window.clearTimeout(timer)
-  }, [locationBias, mapsReady, value])
+  }, [autocompleteEnabled, locationBias, mapsReady, value])
 
   async function selectPrediction(prediction: google.maps.places.PlacePrediction) {
     const place = prediction.toPlace()
@@ -99,12 +112,12 @@ function PlaceField({
       fields: ['id', 'displayName', 'formattedAddress', 'location'],
     })
     if (!place.location) return
-    const label = place.displayName || prediction.mainText?.toString() || prediction.text.toString()
-    const address = place.formattedAddress || prediction.secondaryText?.toString() || label
-    onValueChange(label)
+    const placeLabel = place.displayName || prediction.mainText?.toString() || prediction.text.toString()
+    const address = place.formattedAddress || prediction.secondaryText?.toString() || placeLabel
+    onValueChange(placeLabel)
     onPlaceChange({
       placeId: place.id,
-      label,
+      label: placeLabel,
       address,
       location: place.location.toJSON(),
       source: 'google-place',
@@ -131,7 +144,15 @@ function PlaceField({
           autoComplete="off"
           value={value}
           placeholder={placeholder}
-          onFocus={() => setOpen(true)}
+          onFocus={(event) => {
+            setOpen(true)
+            if (selectOnFocus) event.currentTarget.select()
+          }}
+          onBlur={(event) => {
+            if (!event.currentTarget.closest('.route-place-field')?.contains(event.relatedTarget)) {
+              setOpen(false)
+            }
+          }}
           onChange={(event) => {
             const nextValue = event.target.value
             onValueChange(nextValue)
@@ -146,9 +167,23 @@ function PlaceField({
             if (event.key === 'Escape') setOpen(false)
           }}
         />
-        {loading ? <LoaderCircle className="route-place-field__loader" aria-label="Finding places" /> : null}
+        {autocompleteEnabled && loading
+          ? <LoaderCircle className="route-place-field__loader" aria-label="Finding places" />
+          : null}
+        {trailingAction ? (
+          <button
+            type="button"
+            className={`route-place-field__location${trailingAction.active ? ' route-place-field__location--active' : ''}`}
+            aria-label={trailingAction.label}
+            title={trailingAction.label}
+            disabled={trailingAction.disabled}
+            onClick={trailingAction.onClick}
+          >
+            <LocateFixed aria-hidden="true" />
+          </button>
+        ) : null}
       </div>
-      {open && value.trim().length >= 2 && suggestions.length > 0 ? (
+      {open && autocompleteEnabled && value.trim().length >= 2 && suggestions.length > 0 ? (
         <ul id={`${id}-suggestions`} className="route-place-suggestions" role="listbox">
           {suggestions.map((suggestion) => (
             <li key={suggestion.placeId} role="option" aria-selected="false">
@@ -172,6 +207,7 @@ export function RouteSearchPanel({
   userPosition,
   locating,
   planning,
+  routeReady,
   onRequestLocation,
   onPlan,
 }: RouteSearchPanelProps) {
@@ -181,6 +217,14 @@ export function RouteSearchPanel({
   const [destinationQuery, setDestinationQuery] = useState('')
   const [originPlace, setOriginPlace] = useState<PlaceSelection | null>(null)
   const [destinationPlace, setDestinationPlace] = useState<PlaceSelection | null>(null)
+  const previousRouteReady = useRef(routeReady)
+
+  useEffect(() => {
+    if (routeReady && !previousRouteReady.current) {
+      setExpanded(false)
+    }
+    previousRouteReady.current = routeReady
+  }, [routeReady])
 
   const currentOrigin: PlaceSelection | null = userPosition
     ? {
@@ -192,12 +236,21 @@ export function RouteSearchPanel({
       }
     : null
   const selectedOrigin = useCurrentLocation ? currentOrigin : originPlace
+  const originValue = useCurrentLocation
+    ? locating && !userPosition ? 'Finding your location…' : 'Your location'
+    : originQuery
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!selectedOrigin || !destinationPlace || planning) return
-    setExpanded(false)
     onPlan(selectedOrigin, destinationPlace)
+  }
+
+  function chooseCurrentLocation() {
+    setUseCurrentLocation(true)
+    setOriginQuery('')
+    setOriginPlace(null)
+    if (!userPosition) onRequestLocation()
   }
 
   return (
@@ -206,83 +259,86 @@ export function RouteSearchPanel({
       role="search"
       aria-label="Plan a quiet walking route"
       onSubmit={submit}
-      onClick={() => setExpanded(true)}
     >
-      <div className="route-search-panel__collapsed">
-        <Search aria-hidden="true" />
-        <span>{destinationPlace?.label || destinationQuery || 'Where do you want to go?'}</span>
-        <Navigation aria-hidden="true" />
-      </div>
+      <button
+        type="button"
+        className="route-search-panel__collapsed search-orb-container"
+        aria-expanded={expanded}
+        aria-controls="route-search-expanded"
+        onClick={() => setExpanded(true)}
+      >
+        <span className="gooey-background-layer" aria-hidden="true">
+          <span className="blob blob-1" />
+          <span className="blob blob-2" />
+          <span className="blob blob-3" />
+          <span className="blob-bridge" />
+        </span>
+        <span className="input-overlay">
+          <span className="search-icon-wrapper">
+            <Search className="search-icon" aria-hidden="true" />
+          </span>
+          <span className="modern-input">
+            {destinationPlace?.label || destinationQuery || 'Where do you want to go?'}
+          </span>
+          <Navigation className="route-search-panel__collapsed-nav" aria-hidden="true" />
+          <span className="focus-indicator" aria-hidden="true" />
+        </span>
+        <svg className="gooey-svg-filter" aria-hidden="true">
+          <defs>
+            <filter id="enhanced-goo">
+              <feGaussianBlur in="SourceGraphic" stdDeviation="10" result="blur" />
+              <feColorMatrix
+                in="blur"
+                mode="matrix"
+                values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 20 -9"
+                result="goo"
+              />
+              <feComposite in="SourceGraphic" in2="goo" operator="atop" />
+            </filter>
+          </defs>
+        </svg>
+      </button>
 
-      <div className="route-search-panel__expanded-content">
+      <div id="route-search-expanded" className="route-search-panel__expanded-content">
         <header>
+          <span className="route-search-panel__window-tools" aria-hidden="true">
+            <i className="route-search-panel__window-dot route-search-panel__window-dot--red" />
+            <i className="route-search-panel__window-dot route-search-panel__window-dot--yellow" />
+            <i className="route-search-panel__window-dot route-search-panel__window-dot--green" />
+          </span>
           <div>
             <strong>Plan a quiet walk</strong>
             <span>Live and predicted pedestrian activity</span>
           </div>
-          <button
-            type="button"
-            aria-label="Close route search"
-            onClick={(event) => {
-              event.stopPropagation()
-              setExpanded(false)
-            }}
-          >
+          <button type="button" aria-label="Close route search" onClick={() => setExpanded(false)}>
             <X aria-hidden="true" />
           </button>
         </header>
 
         <div className="route-search-panel__fields">
           <span className="route-search-panel__connector" aria-hidden="true" />
-          {useCurrentLocation ? (
-            <div className="route-current-location">
-              <span>Start</span>
-              <button
-                type="button"
-                onClick={() => {
-                  if (!userPosition) onRequestLocation()
-                }}
-              >
-                <LocateFixed aria-hidden="true" />
-                <span>
-                  <strong>{locating ? 'Finding your location…' : 'Your location'}</strong>
-                  <small>{userPosition ? 'Location ready' : 'Allow access or enter a start point'}</small>
-                </span>
-              </button>
-              <button
-                type="button"
-                className="route-current-location__manual"
-                onClick={() => setUseCurrentLocation(false)}
-              >
-                Enter manually
-              </button>
-            </div>
-          ) : (
-            <div className="route-manual-origin">
-              <PlaceField
-                id="route-origin"
-                label="Start"
-                placeholder="Enter a starting point"
-                value={originQuery}
-                mapsReady={mapsReady}
-                locationBias={userPosition}
-                icon="origin"
-                onValueChange={setOriginQuery}
-                onPlaceChange={setOriginPlace}
-              />
-              <button
-                type="button"
-                disabled={!userPosition && locating}
-                onClick={() => {
-                  setUseCurrentLocation(true)
-                  if (!userPosition) onRequestLocation()
-                }}
-              >
-                <LocateFixed aria-hidden="true" />
-                Use your location
-              </button>
-            </div>
-          )}
+          <PlaceField
+            id="route-origin"
+            label="Start"
+            placeholder="Enter a starting point"
+            value={originValue}
+            mapsReady={mapsReady}
+            locationBias={userPosition}
+            icon="origin"
+            autocompleteEnabled={!useCurrentLocation}
+            selectOnFocus={useCurrentLocation}
+            trailingAction={{
+              label: 'Use your current location',
+              active: useCurrentLocation,
+              disabled: locating && !userPosition,
+              onClick: chooseCurrentLocation,
+            }}
+            onValueChange={(value) => {
+              setUseCurrentLocation(false)
+              setOriginQuery(value)
+            }}
+            onPlaceChange={setOriginPlace}
+          />
 
           <PlaceField
             id="route-destination"
@@ -299,11 +355,22 @@ export function RouteSearchPanel({
 
         <button
           type="submit"
-          className="route-search-panel__submit"
+          className={`route-search-panel__submit${planning ? ' route-search-panel__submit--planning' : ''}`}
           disabled={!selectedOrigin || !destinationPlace || planning}
+          aria-busy={planning}
         >
-          {planning ? <LoaderCircle aria-hidden="true" /> : <Navigation aria-hidden="true" />}
-          {planning ? 'Finding the quietest route…' : 'Find quiet route'}
+          <span>{planning ? 'Finding the quietest route…' : 'Find quiet route'}</span>
+          {planning ? (
+            <span className="route-search-panel__submit-loader" aria-hidden="true">
+              <i />
+              <i />
+              <i />
+            </span>
+          ) : (
+            <svg className="route-search-panel__submit-arrow" viewBox="0 0 16 19" aria-hidden="true">
+              <path d="M7 18C7 18.5523 7.44772 19 8 19C8.55228 19 9 18.5523 9 18H7ZM8.70711 0.292893C8.31658 -0.0976311 7.68342 -0.0976311 7.29289 0.292893L0.928932 6.65685C0.538408 7.04738 0.538408 7.68054 0.928932 8.07107C1.31946 8.46159 1.95262 8.46159 2.34315 8.07107L8 2.41421L13.6569 8.07107C14.0474 8.46159 14.6805 8.46159 15.0711 8.07107C15.4616 7.68054 15.4616 7.04738 15.0711 6.65685L8.70711 0.292893ZM9 18L9 1H7L7 18H9Z" />
+            </svg>
+          )}
         </button>
       </div>
     </form>

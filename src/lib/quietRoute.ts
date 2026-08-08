@@ -48,6 +48,8 @@ export type QuietRoute = QuietRouteCandidate & {
   modelVersion: string
   generatedAt: string
   score: QuietRouteScore
+  priority: number
+  planType: 'crowd-ranked' | 'nearest-quiet'
 }
 
 type QuietRouteSelectionResponse = {
@@ -56,6 +58,7 @@ type QuietRouteSelectionResponse = {
   candidateCount: number
   modelVersion: string
   score: QuietRouteScore
+  scores: QuietRouteScore[]
 }
 
 function compactPath(path: RouteCoordinate[], maximumPoints = 60) {

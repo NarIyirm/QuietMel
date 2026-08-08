@@ -15,7 +15,9 @@ import type { QuietRoute } from '../lib/quietRoute'
 
 type RoutePlannerProps = {
   route: QuietRoute
+  routes: QuietRoute[]
   onClose: () => void
+  onSelectRoute: (routeId: string) => void
   onStartNavigation: () => void
   onSheetStateChange: (state: RouteSheetState) => void
 }
@@ -33,6 +35,53 @@ function crowdLabel(level: QuietRoute['score']['crowdLevel']) {
   return 'High pedestrian activity'
 }
 
+function overallScore(route: QuietRoute) {
+  return Math.max(0, Math.round((1 - route.score.combinedCost) * 100))
+}
+
+function RouteChoices({
+  routes,
+  selectedRouteId,
+  onSelectRoute,
+}: {
+  routes: QuietRoute[]
+  selectedRouteId: string
+  onSelectRoute: (routeId: string) => void
+}) {
+  if (routes.length < 2) return null
+
+  return (
+    <section className="route-choices" aria-label="Route options">
+      <div className="route-details__section-heading">
+        <h3>Choose a route</h3>
+        <span>Ranked by overall score</span>
+      </div>
+      <div className="route-choices__list" role="radiogroup" aria-label="Available walking routes">
+        {routes.map((candidate) => {
+          const selected = candidate.id === selectedRouteId
+          return (
+            <button
+              key={candidate.id}
+              type="button"
+              className={`route-choice${selected ? ' route-choice--selected' : ''}`}
+              role="radio"
+              aria-checked={selected}
+              onClick={() => onSelectRoute(candidate.id)}
+            >
+              <span className="route-choice__rank">{candidate.priority}</span>
+              <span className="route-choice__main">
+                <strong>{candidate.priority === 1 ? 'Recommended' : `Alternative ${candidate.priority}`}</strong>
+                <small>{Math.round(candidate.durationMinutes)} min · {formatDistance(candidate.distanceMeters)} · {crowdLabel(candidate.score.crowdLevel)}</small>
+              </span>
+              <span className="route-choice__score"><strong>{overallScore(candidate)}</strong><small>score</small></span>
+            </button>
+          )
+        })}
+      </div>
+    </section>
+  )
+}
+
 function RouteDetails({
   route,
   onStartNavigation,
@@ -41,18 +90,21 @@ function RouteDetails({
   onStartNavigation: () => void
 }) {
   const confidencePercent = Math.round(route.score.coverageConfidence * 100)
+  const nearbyQuietRoute = route.planType === 'nearest-quiet'
 
   return (
     <div className="route-details route-details--live">
       <div className="route-details__summary">
         <div>
-          <span className="route-details__eyebrow">Recommended route</span>
-          <h3>Quietest practical walk</h3>
+          <span className="route-details__eyebrow">
+            {nearbyQuietRoute ? 'Nearest low-activity area' : `Priority ${route.priority} of ${route.candidateCount}`}
+          </span>
+          <h3>{nearbyQuietRoute ? 'Fastest nearby quiet walk' : route.priority === 1 ? 'Recommended quiet walk' : `Alternative route ${route.priority}`}</h3>
         </div>
         <span className="route-details__score">
-          <ShieldCheck aria-hidden="true" />
-          {route.candidateCount}
-          <small>routes checked</small>
+          {nearbyQuietRoute ? <UsersRound aria-hidden="true" /> : <ShieldCheck aria-hidden="true" />}
+          {nearbyQuietRoute ? route.score.averageCrowdPpm : overallScore(route)}
+          <small>{nearbyQuietRoute ? 'pedestrians/min nearby' : 'overall score'}</small>
         </span>
       </div>
 
@@ -70,7 +122,9 @@ function RouteDetails({
           <span>{confidencePercent}% coverage</span>
         </div>
         <p>
-          {route.score.extraMinutesComparedWithFastest > 0
+          {nearbyQuietRoute
+            ? 'Google Maps selected its fastest walking route to the nearest currently low-activity sensor area.'
+            : route.score.extraMinutesComparedWithFastest > 0
             ? `${route.score.extraMinutesComparedWithFastest} minutes longer than the fastest option, with lower predicted crowd exposure.`
             : 'This is both the fastest eligible route and the best match for current crowd conditions.'}
         </p>
@@ -109,7 +163,9 @@ function RouteDetails({
 
 export function RoutePlanner({
   route,
+  routes,
   onClose,
+  onSelectRoute,
   onStartNavigation,
   onSheetStateChange,
 }: RoutePlannerProps) {
@@ -203,7 +259,7 @@ export function RoutePlanner({
           aria-label="Show recommended route details"
           onClick={() => setSheetState('medium')}
         >
-          <span><strong>Quietest practical walk</strong><small>Recommended route</small></span>
+          <span><strong>{route.planType === 'nearest-quiet' ? 'Nearby quiet walk' : route.priority === 1 ? 'Recommended quiet walk' : `Alternative route ${route.priority}`}</strong><small>{route.planType === 'nearest-quiet' ? 'Fastest route to a low-activity area' : `Priority ${route.priority} of ${route.candidateCount}`}</small></span>
           <span><strong>{Math.round(route.durationMinutes)} min</strong><small>{formatDistance(route.distanceMeters)} · {crowdLabel(route.score.crowdLevel)}</small></span>
           <ChevronRight aria-hidden="true" />
         </button>
@@ -211,7 +267,7 @@ export function RoutePlanner({
         <header className="route-planner-panel__header">
           <div>
             <span>Live route plan</span>
-            <h2>Your quietest practical route</h2>
+            <h2>{route.planType === 'nearest-quiet' ? 'Nearest quiet place' : 'Your quietest practical route'}</h2>
           </div>
           <button type="button" aria-label="Close route planning" onClick={onClose}>
             <X aria-hidden="true" />
@@ -225,6 +281,11 @@ export function RoutePlanner({
             <div><MapPin aria-hidden="true" /><p><small>To</small>{route.destination.label}</p></div>
           </div>
           <div className="route-panel-details">
+            <RouteChoices
+              routes={routes}
+              selectedRouteId={route.id}
+              onSelectRoute={onSelectRoute}
+            />
             <RouteDetails route={route} onStartNavigation={onStartNavigation} />
           </div>
         </div>
@@ -232,6 +293,11 @@ export function RoutePlanner({
 
       <section className="route-detail-popover" aria-live="polite" aria-label="Recommended route details">
         <span className="route-detail-popover__pointer" aria-hidden="true" />
+        <RouteChoices
+          routes={routes}
+          selectedRouteId={route.id}
+          onSelectRoute={onSelectRoute}
+        />
         <RouteDetails route={route} onStartNavigation={onStartNavigation} />
       </section>
     </>

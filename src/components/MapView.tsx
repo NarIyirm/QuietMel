@@ -44,6 +44,8 @@ type MapViewProps = {
   routeSheetState: 'collapsed' | 'medium' | 'expanded'
   onLocationStatus: (message: string) => void
   quietRoute: QuietRoute | null
+  quietRouteOptions: QuietRoute[]
+  onQuietRouteSelect: (routeId: string) => void
   onUserPositionChange: (position: RouteCoordinate | null) => void
   onMapReady: () => void
 }
@@ -391,10 +393,14 @@ function LiveCrowdHeatmap({ points }: { points: LiveCrowdPoint[] }) {
 
 function RealRouteOverlay({
   route,
+  routes,
+  onRouteSelect,
   routeSheetState,
   navigationActive,
 }: {
   route: QuietRoute
+  routes: QuietRoute[]
+  onRouteSelect: (routeId: string) => void
   routeSheetState: 'collapsed' | 'medium' | 'expanded'
   navigationActive: boolean
 }) {
@@ -403,7 +409,9 @@ function RealRouteOverlay({
   useEffect(() => {
     if (!map) return
     const bounds = new google.maps.LatLngBounds()
-    for (const coordinate of route.path) bounds.extend(coordinate)
+    for (const candidate of navigationActive ? [route] : routes) {
+      for (const coordinate of candidate.path) bounds.extend(coordinate)
+    }
     const desktop = window.matchMedia('(min-width: 768px)').matches
     const mobilePanelHeight = navigationActive
       ? 180
@@ -418,33 +426,70 @@ function RealRouteOverlay({
         ? { top: 110, right: 70, bottom: 80, left: 430 }
         : { top: 120, right: 30, bottom: mobilePanelHeight + 90, left: 30 },
     )
-  }, [map, navigationActive, route.path, routeSheetState])
+  }, [map, navigationActive, route, routeSheetState, routes])
 
   useEffect(() => {
     if (!map) return
-    const outline = new google.maps.Polyline({
-      map,
-      path: route.path,
-      clickable: false,
-      strokeColor: '#ffffff',
-      strokeOpacity: 0.94,
-      strokeWeight: navigationActive ? 12 : 11,
-      zIndex: 31,
-    })
-    const line = new google.maps.Polyline({
-      map,
-      path: route.path,
-      clickable: false,
-      strokeColor: '#087c78',
-      strokeOpacity: 0.96,
-      strokeWeight: navigationActive ? 8 : 7,
-      zIndex: 32,
-    })
-    return () => {
-      outline.setMap(null)
-      line.setMap(null)
+    const polylines: google.maps.Polyline[] = []
+    const listeners: google.maps.MapsEventListener[] = []
+    const visibleRoutes = navigationActive ? [route] : [...routes].sort(
+      (first, second) => Number(first.id === route.id) - Number(second.id === route.id),
+    )
+
+    for (const candidate of visibleRoutes) {
+      const selected = candidate.id === route.id
+      if (selected) {
+        polylines.push(new google.maps.Polyline({
+          map,
+          path: candidate.path,
+          clickable: !navigationActive,
+          strokeColor: '#ffffff',
+          strokeOpacity: 0.94,
+          strokeWeight: navigationActive ? 12 : 11,
+          zIndex: 31,
+        }))
+        const line = new google.maps.Polyline({
+          map,
+          path: candidate.path,
+          clickable: !navigationActive,
+          strokeColor: '#087c78',
+          strokeOpacity: 0.96,
+          strokeWeight: navigationActive ? 8 : 7,
+          zIndex: 32,
+        })
+        polylines.push(line)
+        if (!navigationActive) listeners.push(line.addListener('click', () => onRouteSelect(candidate.id)))
+        continue
+      }
+
+      const alternative = new google.maps.Polyline({
+        map,
+        path: candidate.path,
+        clickable: true,
+        strokeOpacity: 0,
+        strokeWeight: 9,
+        zIndex: 25,
+        icons: [{
+          icon: {
+            path: 'M 0,-1 0,1',
+            strokeColor: '#5e7478',
+            strokeOpacity: 0.72,
+            strokeWeight: 3.5,
+            scale: 3,
+          },
+          offset: '0',
+          repeat: '14px',
+        }],
+      })
+      polylines.push(alternative)
+      listeners.push(alternative.addListener('click', () => onRouteSelect(candidate.id)))
     }
-  }, [map, navigationActive, route.path])
+
+    return () => {
+      for (const listener of listeners) listener.remove()
+      for (const polyline of polylines) polyline.setMap(null)
+    }
+  }, [map, navigationActive, onRouteSelect, route, routes])
 
   return (
     <>
@@ -850,12 +895,12 @@ function PlaceDiscoveryOverlay({
   }
 
   useEffect(() => {
-    if (!map) return
+    if (!map || !userPosition) return
 
     const requestId = searchSequence.current + 1
     searchSequence.current = requestId
     const category = getPlaceCategory(categoryId)
-    const center = userPosition ?? map.getCenter()?.toJSON() ?? MELBOURNE_CENTRE
+    const center = userPosition
 
     onStatus(`Searching Google Maps for nearby ${category.label.toLocaleLowerCase()}…`)
 
@@ -915,7 +960,10 @@ function PlaceDiscoveryOverlay({
   }, [categoryId, map, onStatus, userPosition])
 
   async function showWalkingRoute(place: google.maps.places.Place) {
-    if (!map || !place.location) return
+    if (!map || !place.location || !userPosition) {
+      onStatus('Location access is required before a walking route can be planned.')
+      return
+    }
 
     const requestId = routeSequence.current + 1
     routeSequence.current = requestId
@@ -927,9 +975,8 @@ function PlaceDiscoveryOverlay({
 
     try {
       const { Route } = await google.maps.importLibrary('routes')
-      const origin = userPosition ?? map.getCenter()?.toJSON() ?? MELBOURNE_CENTRE
       const result = await Route.computeRoutes({
-        origin,
+        origin: userPosition,
         destination: place,
         travelMode: 'WALKING',
         fields: ['path', 'distanceMeters', 'durationMillis', 'localizedValues', 'viewport'],
@@ -1100,6 +1147,8 @@ function MapContent({
   routeSheetState,
   onLocationStatus,
   quietRoute,
+  quietRouteOptions,
+  onQuietRouteSelect,
   onUserPositionChange,
   onMapReady,
 }: MapViewProps) {
@@ -1274,6 +1323,8 @@ function MapContent({
       {(routePlanningActive || navigationActive) && quietRoute ? (
         <RealRouteOverlay
           route={quietRoute}
+          routes={quietRouteOptions}
+          onRouteSelect={onQuietRouteSelect}
           routeSheetState={routeSheetState}
           navigationActive={navigationActive}
         />

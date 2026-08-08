@@ -34,6 +34,7 @@ export type QuietRouteSelection = {
   candidateCount: number
   modelVersion: string
   score: QuietRouteScore
+  scores: QuietRouteScore[]
 }
 
 type SamplePoint = RouteCoordinate & {
@@ -200,18 +201,14 @@ export async function selectQuietRoute(
   })
 
   const fastestDuration = Math.min(...rawScores.map(({ candidate }) => candidate.durationMinutes))
-  const maximumAllowedDuration = Math.min(fastestDuration * 1.25, fastestDuration + 10)
-  const eligible = rawScores.filter(
-    ({ candidate }) => candidate.durationMinutes <= maximumAllowedDuration,
-  )
-  const durationValues = eligible.map(({ candidate }) => candidate.durationMinutes)
-  const exposureValues = eligible.map(({ exposure }) => exposure)
+  const durationValues = rawScores.map(({ candidate }) => candidate.durationMinutes)
+  const exposureValues = rawScores.map(({ exposure }) => exposure)
   const durationMinimum = Math.min(...durationValues)
   const durationMaximum = Math.max(...durationValues)
   const exposureMinimum = Math.min(...exposureValues)
   const exposureMaximum = Math.max(...exposureValues)
 
-  const ranked = eligible
+  const ranked = rawScores
     .map((entry) => ({
       ...entry,
       combinedCost:
@@ -225,35 +222,41 @@ export async function selectQuietRoute(
   const fastest = rawScores.reduce((best, entry) =>
     entry.candidate.durationMinutes < best.candidate.durationMinutes ? entry : best,
   )
-  const crowdReduction = fastest.exposure > 0
-    ? Math.max(0, (1 - selected.exposure / fastest.exposure) * 100)
-    : 0
-  const crowdLevel = selected.averageCrowd < 50
-    ? 'low'
-    : selected.averageCrowd < 150
-      ? 'medium'
-      : 'high'
+  const toScore = (entry: typeof ranked[number]): QuietRouteScore => {
+    const crowdReduction = fastest.exposure > 0
+      ? Math.max(0, (1 - entry.exposure / fastest.exposure) * 100)
+      : 0
+    const crowdLevel = entry.averageCrowd < 50
+      ? 'low'
+      : entry.averageCrowd < 150
+        ? 'medium'
+        : 'high'
+
+    return {
+      routeId: entry.candidate.id,
+      durationMinutes: round(entry.candidate.durationMinutes),
+      distanceMeters: Math.round(entry.candidate.distanceMeters),
+      averageCrowdPpm: round(entry.averageCrowd),
+      maximumCrowdPpm: round(entry.maximumCrowd),
+      crowdExposure: round(entry.exposure),
+      highCrowdPercent: round(entry.highCrowdPercent),
+      coverageConfidence: round(entry.coverageConfidence, 2),
+      extraMinutesComparedWithFastest: round(
+        entry.candidate.durationMinutes - fastestDuration,
+      ),
+      crowdReductionPercent: Math.round(crowdReduction),
+      crowdLevel,
+      combinedCost: round(entry.combinedCost, 3),
+    }
+  }
+  const scores = ranked.map(toScore)
 
   return {
     generatedAt: new Date().toISOString(),
     selectedRouteId: selected.candidate.id,
     candidateCount: candidates.length,
     modelVersion: forecast.modelVersion,
-    score: {
-      routeId: selected.candidate.id,
-      durationMinutes: round(selected.candidate.durationMinutes),
-      distanceMeters: Math.round(selected.candidate.distanceMeters),
-      averageCrowdPpm: round(selected.averageCrowd),
-      maximumCrowdPpm: round(selected.maximumCrowd),
-      crowdExposure: round(selected.exposure),
-      highCrowdPercent: round(selected.highCrowdPercent),
-      coverageConfidence: round(selected.coverageConfidence, 2),
-      extraMinutesComparedWithFastest: round(
-        selected.candidate.durationMinutes - fastestDuration,
-      ),
-      crowdReductionPercent: Math.round(crowdReduction),
-      crowdLevel,
-      combinedCost: round(selected.combinedCost, 3),
-    },
+    score: scores[0],
+    scores,
   }
 }

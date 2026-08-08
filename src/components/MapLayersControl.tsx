@@ -86,7 +86,7 @@ export function MapLayersControl({
   }, [open])
 
   return (
-    <div className="map-layers-control" ref={rootRef}>
+    <div className="map-layers-control" data-tour="layers" ref={rootRef}>
       <button
         type="button"
         className={`layers-button${open ? ' layers-button--open' : ''}`}
