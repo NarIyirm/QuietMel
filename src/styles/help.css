@@ -151,6 +151,16 @@
   gap: 5px;
 }
 
+.help-library__catalogue-error {
+  margin: 4px 8px;
+  padding: 10px;
+  border-radius: 9px;
+  color: oklch(0.38 0.11 28);
+  background: oklch(0.95 0.035 28);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
 .help-library__sidebar nav button {
   display: flex;
   width: 100%;
@@ -270,6 +280,36 @@
   border: 0;
 }
 
+.help-library__reader-status {
+  display: grid;
+  height: 100%;
+  place-content: center;
+  justify-items: center;
+  gap: 12px;
+  padding: 24px;
+  color: oklch(0.88 0.01 210);
+  text-align: center;
+}
+
+.help-library__reader-status svg {
+  width: 30px;
+  height: 30px;
+}
+
+.help-library__reader-loader {
+  animation: help-manual-spin 800ms linear infinite;
+}
+
+.help-library__reader-status p {
+  max-width: 38ch;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+@keyframes help-manual-spin {
+  to { transform: rotate(360deg); }
+}
+
 .help-library__pdf-fallback {
   display: grid;
   height: 100%;
@@ -379,5 +419,9 @@
 @media (prefers-reduced-motion: reduce) {
   .help-library__sidebar {
     transition: none;
+  }
+
+  .help-library__reader-loader {
+    animation: none;
   }
 }

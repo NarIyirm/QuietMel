@@ -10,6 +10,7 @@
     "build": "npm run check:server && tsc -b && vite build",
     "check:server": "tsc -p server/tsconfig.json",
     "forecast:import": "node scripts/import-forecast.mjs",
+    "help:upload": "node scripts/upload-help-manuals.mjs",
     "lint": "eslint .",
     "preview": "vite preview"
   },

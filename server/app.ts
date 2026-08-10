@@ -4,6 +4,7 @@ import express from 'express'
 import { env } from './config/env.js'
 import { crowdRouter } from './routes/crowd.js'
 import { healthRouter } from './routes/health.js'
+import { helpRouter } from './routes/help.js'
 import { routesRouter } from './routes/routes.js'
 
 const app = express()
@@ -32,6 +33,7 @@ app.use(express.json({ limit: '500kb' }))
 
 app.use('/api/health', healthRouter)
 app.use('/api/crowd', crowdRouter)
+app.use('/api/help', helpRouter)
 app.use('/api/routes', routesRouter)
 
 app.use((_request, response) => {
