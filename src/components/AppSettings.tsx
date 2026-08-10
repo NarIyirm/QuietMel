@@ -1,4 +1,4 @@
-import { BookOpen, Check, Palette, Settings2, X } from 'lucide-react'
+import { BookOpen, Check, CircleHelp, Palette, Settings2, X } from 'lucide-react'
 
 export type ThemeChoice = 'original' | 'dark'
 export type LanguageChoice = 'en' | 'zh-CN'
@@ -70,6 +70,17 @@ export function AppSettings({
         <section className="app-settings__section app-settings__tutorial">
           <div><BookOpen aria-hidden="true" /><div><h3>{chinese ? '地图教程' : 'Map tutorial'}</h3><p>{chinese ? '随时重新查看地图核心操作。' : 'Review the key map controls at any time.'}</p></div></div>
           <button type="button" onClick={onRestartTutorial}>{chinese ? '开始教程' : 'Start tutorial'}</button>
+        </section>
+
+        <section className="app-settings__section app-settings__help">
+          <div>
+            <CircleHelp aria-hidden="true" />
+            <div>
+              <h3>{chinese ? '帮助中心' : 'Help centre'}</h3>
+              <p>{chinese ? '阅读地图、数据和路线规划手册。' : 'Read guides for the map, data and route planning.'}</p>
+            </div>
+          </div>
+          <a href="/help">{chinese ? '打开帮助' : 'Open help'}</a>
         </section>
       </section>
     </div>

@@ -187,7 +187,15 @@ function PlaceField({
         <ul id={`${id}-suggestions`} className="route-place-suggestions" role="listbox">
           {suggestions.map((suggestion) => (
             <li key={suggestion.placeId} role="option" aria-selected="false">
-              <button type="button" onClick={() => void selectPrediction(suggestion)}>
+              <button
+                type="button"
+                onPointerDown={(event) => {
+                  // Safari does not focus buttons on click, so the input's blur
+                  // can remove this list before the click event is dispatched.
+                  event.preventDefault()
+                }}
+                onClick={() => void selectPrediction(suggestion)}
+              >
                 <MapPin aria-hidden="true" />
                 <span>
                   <strong>{suggestion.mainText?.toString() || suggestion.text.toString()}</strong>

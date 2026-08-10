@@ -1066,13 +1066,14 @@
 .app-settings__dialog > header,
 .app-settings__dialog > header > div,
 .app-settings__section-title,
-.app-settings__tutorial > div {
+.app-settings__tutorial > div,
+.app-settings__help > div {
   display: flex;
   align-items: center;
 }
 
 .app-settings__dialog > header { justify-content: space-between; padding: 16px 17px 13px; border-bottom: 1px solid var(--color-border); }
-.app-settings__dialog > header > div, .app-settings__section-title, .app-settings__tutorial > div { gap: 8px; }
+.app-settings__dialog > header > div, .app-settings__section-title, .app-settings__tutorial > div, .app-settings__help > div { gap: 8px; }
 .app-settings h2, .app-settings h3, .app-settings p { margin: 0; }
 .app-settings h2 { font-size: 1rem; }
 .app-settings h3 { font-size: 0.75rem; }
@@ -1085,9 +1086,13 @@
 .app-settings__theme svg { width: 13px; color: var(--color-accent); }
 .app-settings__theme--selected { border-color: var(--color-accent); background: var(--color-primary-soft); }
 .app-settings__section > select { width: 100%; min-height: 38px; margin-top: 9px; padding: 0 10px; border: 1px solid var(--color-border); border-radius: 9px; color: var(--color-ink); background: var(--color-bg); }
-.app-settings__tutorial { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 0; }
-.app-settings__tutorial p { margin-top: 3px; color: var(--color-muted); font-size: 0.6875rem; }
+.app-settings__tutorial, .app-settings__help { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.app-settings__tutorial p, .app-settings__help p { margin-top: 3px; color: var(--color-muted); font-size: 0.6875rem; }
 .app-settings__tutorial > button { min-height: 34px; padding: 0 10px; border: 0; border-radius: 9px; color: white; background: var(--color-accent); font-size: 0.6875rem; font-weight: 750; cursor: pointer; }
+.app-settings__help { border-bottom: 0; }
+.app-settings__help > div > svg { width: 18px; flex: 0 0 auto; color: var(--color-accent); }
+.app-settings__help > a { display: inline-flex; min-height: 34px; flex: 0 0 auto; align-items: center; padding: 0 10px; border-radius: 9px; color: white; background: var(--color-accent); text-decoration: none; font-size: 0.6875rem; font-weight: 750; }
+.app-settings__help > a:hover { background: var(--color-primary); }
 
 .onboarding-tour { position: fixed; z-index: calc(var(--z-nav) + 10); inset: 0; pointer-events: auto; }
 .onboarding-tour__shade { position: absolute; inset: 0; background: oklch(0.16 0.02 112 / 0.48); }
