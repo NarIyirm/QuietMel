@@ -7,7 +7,8 @@ const steps: TourStep[] = [
   { target: 'route-search', title: 'Plan a walk', body: 'Search for a start and destination to compare quieter walking routes.' },
   { target: 'layers', title: 'Choose map details', body: 'Switch between the heatmap, sensor locations, or both together.' },
   { target: 'refresh', title: 'Refresh live activity', body: 'Request the latest pedestrian readings whenever you need them.' },
-  { target: 'nearby-quiet', title: 'Find quiet nearby', body: 'Use your location to take the fastest walk to the nearest low-activity area.' },
+  { target: 'nearby-quiet', title: 'Find quiet nearby', body: 'Find a calm park, café, or library from your live location or a map area you confirm.' },
+  { target: 'choose-area', title: 'Choose another area', body: 'Place the pin anywhere on the map to search without location access, or to explore somewhere else.' },
   { target: 'locate', title: 'Your location', body: 'Return the map to your current position at any time.' },
 ]
 

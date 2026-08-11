@@ -23,6 +23,8 @@ import {
 import { CrowdRefreshButton } from './components/CrowdRefreshButton'
 import { AppSettings, type LanguageChoice, type ThemeChoice } from './components/AppSettings'
 import { OnboardingTour } from './components/OnboardingTour'
+import { LandingIntro } from './components/LandingIntro'
+import { LocationToastStack, type LocationToast } from './components/LocationToastStack'
 import { ForecastControls } from './components/ForecastControls'
 import { MapLayersControl } from './components/MapLayersControl'
 import { RoutePlanner, type RouteSheetState } from './components/RoutePlanner'
@@ -53,6 +55,16 @@ import {
 import './styles/app.css'
 
 const MapView = lazy(() => import('./components/MapView'))
+
+type SearchOrigin = {
+  position: RouteCoordinate
+  source: 'device' | 'map'
+}
+
+type MapPickIntent =
+  | { type: 'category'; categoryId: PlaceCategoryId }
+  | { type: 'nearby-quiet' }
+  | { type: 'change-origin' }
 
 const CATEGORY_ICONS: Record<PlaceCategoryId, LucideIcon> = {
   parks: Trees,
@@ -226,10 +238,15 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [theme, setTheme] = useState<ThemeChoice>(() => localStorage.getItem('quietmel:theme') === 'dark' ? 'dark' : 'original')
   const [language, setLanguage] = useState<LanguageChoice>(() => (localStorage.getItem('quietmel:language') as LanguageChoice | null) ?? 'en')
+  const [landingOpen, setLandingOpen] = useState(
+    () => localStorage.getItem('quietmel:landing-seen:v1') !== 'true',
+  )
   const [tourOpen, setTourOpen] = useState(() => localStorage.getItem('quietmel:onboarding-complete') !== 'true')
   const [tourSession, setTourSession] = useState(0)
-  const [locateRequest, setLocateRequest] = useState(1)
+  const [locateRequest, setLocateRequest] = useState(() => landingOpen ? 0 : 1)
   const [userPosition, setUserPosition] = useState<RouteCoordinate | null>(null)
+  const [searchOrigin, setSearchOrigin] = useState<SearchOrigin | null>(null)
+  const [mapPickIntent, setMapPickIntent] = useState<MapPickIntent | null>(null)
   const [locating, setLocating] = useState(true)
   const [mapsReady, setMapsReady] = useState(false)
   const [crowdLayerMode, setCrowdLayerMode] = useState<CrowdLayerMode>('heatmap')
@@ -243,7 +260,8 @@ function App() {
   const [routePlanningLoading, setRoutePlanningLoading] = useState(false)
   const [nearbyQuietLoading, setNearbyQuietLoading] = useState(false)
   const [nearbyQuietFeedback, setNearbyQuietFeedback] = useState<string | null>(null)
-  const [locationPermissionNotice, setLocationPermissionNotice] = useState(false)
+  const [locationToasts, setLocationToasts] = useState<LocationToast[]>([])
+  const [chooseAreaAttention, setChooseAreaAttention] = useState(0)
   const [quietRoute, setQuietRoute] = useState<QuietRoute | null>(null)
   const [quietRouteOptions, setQuietRouteOptions] = useState<QuietRoute[]>([])
   const [selectedRouteId, setSelectedRouteId] = useState<DemoRouteId>('quietest')
@@ -252,6 +270,10 @@ function App() {
   const reroutePromptVisible = false
   const [routeSheetState, setRouteSheetState] = useState<RouteSheetState>('medium')
   const routeRequestRef = useRef<AbortController | null>(null)
+  const locationRequestAttemptsRef = useRef(0)
+  const locationToastIdRef = useRef(0)
+  const locationToastTimersRef = useRef(new Map<number, number>())
+  const chooseAreaAttentionTimerRef = useRef<number | null>(null)
   const {
     snapshot: crowdSnapshot,
     loading: crowdLoading,
@@ -277,9 +299,64 @@ function App() {
     localStorage.setItem('quietmel:language', language)
   }, [language])
 
+  const dismissLocationToast = useCallback((id: number) => {
+    const timer = locationToastTimersRef.current.get(id)
+    if (timer !== undefined) window.clearTimeout(timer)
+    locationToastTimersRef.current.delete(id)
+    setLocationToasts((current) => current.filter((toast) => toast.id !== id))
+  }, [])
+
+  const showLocationError = useCallback(() => {
+    const id = locationToastIdRef.current + 1
+    locationToastIdRef.current = id
+    setLocationToasts((current) => [
+      ...current,
+      {
+        id,
+        message: 'Location permission is off or unavailable.',
+      },
+    ])
+    setChooseAreaAttention(0)
+    window.requestAnimationFrame(() => setChooseAreaAttention(id))
+    if (chooseAreaAttentionTimerRef.current !== null) {
+      window.clearTimeout(chooseAreaAttentionTimerRef.current)
+    }
+    chooseAreaAttentionTimerRef.current = window.setTimeout(() => {
+      setChooseAreaAttention(0)
+      chooseAreaAttentionTimerRef.current = null
+    }, 900)
+    const timer = window.setTimeout(() => dismissLocationToast(id), 4_800)
+    locationToastTimersRef.current.set(id, timer)
+  }, [dismissLocationToast])
+
+  useEffect(() => () => {
+    for (const timer of locationToastTimersRef.current.values()) {
+      window.clearTimeout(timer)
+    }
+    locationToastTimersRef.current.clear()
+    if (chooseAreaAttentionTimerRef.current !== null) {
+      window.clearTimeout(chooseAreaAttentionTimerRef.current)
+    }
+  }, [])
+
   function closeTour() {
     setTourOpen(false)
     localStorage.setItem('quietmel:onboarding-complete', 'true')
+  }
+
+  function closeLanding() {
+    setLandingOpen(false)
+    localStorage.setItem('quietmel:landing-seen:v1', 'true')
+    if (locateRequest === 0) {
+      setLocating(true)
+      setLocateRequest(1)
+    }
+  }
+
+  function showLanding() {
+    setSettingsOpen(false)
+    setTourOpen(false)
+    setLandingOpen(true)
   }
 
   function restartTour() {
@@ -396,9 +473,8 @@ function App() {
   }
 
   function handleCategoryChange(category: PlaceCategoryId) {
-    if (!userPosition) {
-      setStatusMessage('Location access is required to search for nearby places. Please allow location access.')
-      requestLocation()
+    if (!searchOrigin) {
+      beginMapOriginPicker({ type: 'category', categoryId: category })
       return
     }
     setActiveCategory(category)
@@ -440,19 +516,98 @@ function App() {
   const handleUserPositionChange = useCallback((position: RouteCoordinate | null) => {
     setUserPosition(position)
     setLocating(false)
-    if (position) setLocationPermissionNotice(false)
+    if (position) {
+      const explicitlyRequested = locationRequestAttemptsRef.current > 0
+      if (explicitlyRequested) locationRequestAttemptsRef.current -= 1
+      setSearchOrigin((current) => explicitlyRequested
+        ? { position, source: 'device' }
+        : current ?? { position, source: 'device' })
+      if (explicitlyRequested) setMapPickIntent(null)
+    }
   }, [])
 
   const handleLocationStatus = useCallback((message: string) => {
     setStatusMessage(message)
-    if (message.includes('Location access was not available')) {
-      setLocationPermissionNotice(true)
+    if (
+      locationRequestAttemptsRef.current > 0
+      && (message.includes('Location access was not available') || message.includes('Location is not available'))
+    ) {
+      locationRequestAttemptsRef.current -= 1
+      showLocationError()
     }
-  }, [])
+  }, [showLocationError])
 
   function requestLocation() {
+    locationRequestAttemptsRef.current += 1
+    setMapPickIntent(null)
+    setSearchOrigin(null)
     setLocating(true)
     setLocateRequest((request) => request + 1)
+  }
+
+  function requestLocationFromMapPicker() {
+    locationRequestAttemptsRef.current += 1
+    setLocating(true)
+    setLocateRequest((request) => request + 1)
+  }
+
+  function beginMapOriginPicker(intent: MapPickIntent) {
+    setMapPickIntent(intent)
+    setNavigationActive(false)
+    if (intent.type === 'nearby-quiet') {
+      setRoutePlanningActive(false)
+      setNearbyQuietFeedback(null)
+    }
+    setStatusMessage(
+      language === 'zh-CN'
+        ? '移动地图，将大头针对准搜索起点，然后确认。'
+        : 'Move the map to choose a search origin, then confirm.',
+    )
+  }
+
+  function confirmMapOrigin(position: RouteCoordinate) {
+    const intent = mapPickIntent
+    setSearchOrigin({ position, source: 'map' })
+    setMapPickIntent(null)
+
+    if (intent?.type === 'category') {
+      setActiveCategory(intent.categoryId)
+      setSelectedPedestrianSensorId(null)
+      setStatusMessage('Searching the selected map area...')
+      return
+    }
+
+    if (intent?.type === 'nearby-quiet') {
+      void findNearbyQuietPlace(position, 'map')
+      return
+    }
+
+    setStatusMessage(
+      language === 'zh-CN'
+        ? '搜索起点已更新。选择地点类型或查找附近安静地点。'
+        : 'Search origin updated. Choose a place type or find a quiet place nearby.',
+    )
+  }
+
+  function searchCurrentMapArea(position: RouteCoordinate) {
+    setSearchOrigin({ position, source: 'map' })
+    if (activeCategory) {
+      setStatusMessage('Refreshing places around the selected map area...')
+      return
+    }
+    if (quietRoute?.planType === 'nearest-quiet') {
+      void findNearbyQuietPlace(position, 'map')
+    }
+  }
+
+  function startNearbyQuietSearch() {
+    if (!userPosition) {
+      beginMapOriginPicker({ type: 'nearby-quiet' })
+      return
+    }
+
+    setSearchOrigin({ position: userPosition, source: 'device' })
+    void findNearbyQuietPlace(userPosition, 'device')
   }
 
   async function planQuietRoute(origin: PlaceSelection, destination: PlaceSelection) {
@@ -574,35 +729,31 @@ function App() {
     setStatusMessage('Navigation ended. Your route summary is shown again.')
   }
 
-  function requestCurrentPosition() {
-    return new Promise<RouteCoordinate>((resolve, reject) => {
-      if (!navigator.geolocation) {
-        reject(new Error('Location is not available in this browser.'))
-        return
-      }
-      navigator.geolocation.getCurrentPosition(
-        ({ coords }) => resolve({ lat: coords.latitude, lng: coords.longitude }),
-        () => reject(new Error('Location access is needed to find a nearby quiet place.')),
-        { enableHighAccuracy: true, timeout: 8_000, maximumAge: 30_000 },
-      )
-    })
-  }
-
-  async function findNearbyQuietPlace() {
+  async function findNearbyQuietPlace(
+    originOverride?: RouteCoordinate,
+    originSource: SearchOrigin['source'] = searchOrigin?.source ?? 'device',
+  ) {
     if (nearbyQuietLoading) return
+    const originLocation = originOverride ?? searchOrigin?.position
+    if (!originLocation) {
+      beginMapOriginPicker({ type: 'nearby-quiet' })
+      return
+    }
+    setActiveCategory(null)
+    setForecasting(false)
+    setForecastPlaying(false)
+    setNavigationActive(false)
+    setRoutePlanningActive(false)
     const controller = new AbortController()
     routeRequestRef.current?.abort()
     routeRequestRef.current = controller
     setNearbyQuietLoading(true)
     setRoutePlanningLoading(false)
-    setNearbyQuietFeedback('Getting your location…')
+    setNearbyQuietFeedback('Searching from the selected area…')
     setStatusMessage('Finding the nearest quiet area…')
 
     try {
-      const originLocation = userPosition ?? await requestCurrentPosition()
       if (controller.signal.aborted) return
-      setUserPosition(originLocation)
-      setLocating(false)
       setNearbyQuietFeedback('Looking for nearby parks, cafés and libraries…')
       const { Place } = await google.maps.importLibrary('places')
       const nearbyPlaces = await Place.searchNearby({
@@ -625,10 +776,10 @@ function App() {
 
       const origin: PlaceSelection = {
         placeId: null,
-        label: 'Your location',
-        address: 'Current location',
+        label: originSource === 'device' ? 'Your location' : 'Selected map area',
+        address: originSource === 'device' ? 'Current location' : 'Map-selected starting point',
         location: originLocation,
-        source: 'current-location',
+        source: originSource === 'device' ? 'current-location' : 'map-selected',
       }
       const destination: PlaceSelection = {
         placeId: nearest.id ?? null,
@@ -698,9 +849,6 @@ function App() {
       setStatusMessage(`Fastest route ready: ${Math.round(durationMinutes)} minutes to ${placeName}.`)
     } catch (error) {
       if (!controller.signal.aborted) {
-        if (error instanceof Error && error.message.includes('Location access')) {
-          setLocationPermissionNotice(true)
-        }
         setNearbyQuietFeedback(error instanceof Error ? error.message : 'A nearby quiet place could not be found.')
         setStatusMessage(error instanceof Error ? error.message : 'A nearby quiet place could not be found.')
       }
@@ -714,7 +862,7 @@ function App() {
 
   return (
     <main className={`map-app${navigationActive ? ' map-app--navigating' : ''}`}>
-      <section className={`map-region${routePlanningActive ? ` map-region--planning map-region--route-sheet-${routeSheetState}` : ''}${navigationActive ? ' map-region--navigating' : ''}${activeCategory ? ' map-region--places' : ''}${forecasting ? ' map-region--forecasting' : ''}`} aria-label="Explore places">
+      <section className={`map-region${routePlanningActive ? ` map-region--planning map-region--route-sheet-${routeSheetState}` : ''}${navigationActive ? ' map-region--navigating' : ''}${activeCategory ? ' map-region--places' : ''}${forecasting ? ' map-region--forecasting' : ''}${mapPickIntent ? ' map-region--choosing-origin' : ''}`} aria-label="Explore places">
         <Suspense
           fallback={
             <div className="map-loading" role="status">
@@ -733,6 +881,16 @@ function App() {
             navigationRouteId={navigationRouteId}
             reroutePreviewVisible={reroutePromptVisible}
             activePlaceCategory={activeCategory}
+            searchOrigin={searchOrigin?.position ?? null}
+            mapPickerOpen={mapPickIntent !== null}
+            mapPickerTitle={
+              mapPickIntent?.type === 'nearby-quiet'
+                ? (language === 'zh-CN' ? '选择安静地点搜索起点' : 'Choose where to search from')
+                : (language === 'zh-CN' ? '选择地点搜索区域' : 'Choose a search area')
+            }
+            canSearchThisArea={Boolean(activeCategory || (routePlanningActive && quietRoute?.planType === 'nearest-quiet')) && !navigationActive}
+            language={language}
+            chooseAreaAttention={chooseAreaAttention}
             crowdPoints={displayedCrowdPoints}
             pedestrianSensors={pedestrianSensors}
             crowdLayerMode={crowdLayerMode}
@@ -744,6 +902,10 @@ function App() {
             quietRouteOptions={quietRouteOptions}
             onQuietRouteSelect={selectQuietRouteOption}
             onUserPositionChange={handleUserPositionChange}
+            onMapPickerConfirm={confirmMapOrigin}
+            onMapPickerCancel={() => setMapPickIntent(null)}
+            onTryCurrentLocation={requestLocationFromMapPicker}
+            onSearchThisArea={searchCurrentMapArea}
             onMapReady={handleMapReady}
           />
         </Suspense>
@@ -751,14 +913,7 @@ function App() {
         <button type="button" className="map-settings-button" data-tour="settings" aria-label="Open settings" onClick={() => setSettingsOpen(true)}>
           <Settings aria-hidden="true" size={21} />
         </button>
-        {locationPermissionNotice ? (
-          <aside className="location-permission-notice" role="alert">
-            <span>Location permission is off. Turn it on to use this feature.</span>
-            <button type="button" aria-label="Dismiss location permission notice" onClick={() => setLocationPermissionNotice(false)}>
-              <X aria-hidden="true" size={16} />
-            </button>
-          </aside>
-        ) : null}
+        <LocationToastStack toasts={locationToasts} onDismiss={dismissLocationToast} />
 
         {routePlanningActive && quietRoute ? (
           <RoutePlanner
@@ -888,6 +1043,18 @@ function App() {
         >
           <Navigation aria-hidden="true" size={22} fill="currentColor" />
         </button>
+        {!forecasting && !mapPickIntent ? (
+          <button
+            type="button"
+            className={`choose-search-area-button${chooseAreaAttention > 0 ? ' choose-area-attention' : ''}`}
+            data-tour="choose-area"
+            aria-label={language === 'zh-CN' ? '在地图上选择搜索起点' : 'Choose a search origin on the map'}
+            onClick={() => beginMapOriginPicker({ type: 'change-origin' })}
+          >
+            <MapPinned aria-hidden="true" size={18} />
+            <span>{language === 'zh-CN' ? '选择区域' : 'Choose area'}</span>
+          </button>
+        ) : null}
         {nearbyQuietFeedback ? <p className="nearby-quiet-feedback" role="status">{nearbyQuietFeedback}</p> : null}
 
         <button
@@ -897,7 +1064,7 @@ function App() {
           aria-label="Find the nearest quiet place"
           aria-busy={nearbyQuietLoading}
           disabled={nearbyQuietLoading || !mapsReady}
-          onClick={() => void findNearbyQuietPlace()}
+          onClick={startNearbyQuietSearch}
         >
           {nearbyQuietLoading ? (
             <span className="nearby-quiet-button__loader" aria-hidden="true"><i /><i /><i /></span>
@@ -940,8 +1107,9 @@ function App() {
         <p className="sr-only" role="status" aria-live="polite">
           {statusMessage}
         </p>
-        <AppSettings open={settingsOpen} theme={theme} language={language} onClose={() => setSettingsOpen(false)} onThemeChange={setTheme} onLanguageChange={setLanguage} onRestartTutorial={restartTour} />
-        <OnboardingTour key={tourSession} open={tourOpen && mapsReady} onClose={closeTour} />
+        <AppSettings open={settingsOpen} theme={theme} language={language} onClose={() => setSettingsOpen(false)} onThemeChange={setTheme} onLanguageChange={setLanguage} onRestartTutorial={restartTour} onShowIntroduction={showLanding} />
+        <LandingIntro open={landingOpen} language={language} onClose={closeLanding} />
+        <OnboardingTour key={tourSession} open={!landingOpen && tourOpen && mapsReady} onClose={closeTour} />
       </section>
     </main>
   )

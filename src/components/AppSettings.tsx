@@ -1,4 +1,4 @@
-import { BookOpen, Check, CircleHelp, Palette, Settings2, X } from 'lucide-react'
+import { BookOpen, Check, CircleHelp, MapPinned, Palette, Settings2, X } from 'lucide-react'
 
 export type ThemeChoice = 'original' | 'dark'
 export type LanguageChoice = 'en' | 'zh-CN'
@@ -11,6 +11,7 @@ type AppSettingsProps = {
   onThemeChange: (theme: ThemeChoice) => void
   onLanguageChange: (language: LanguageChoice) => void
   onRestartTutorial: () => void
+  onShowIntroduction: () => void
 }
 
 const themes: Array<{ id: ThemeChoice; label: string; color: string }> = [
@@ -26,6 +27,7 @@ export function AppSettings({
   onThemeChange,
   onLanguageChange,
   onRestartTutorial,
+  onShowIntroduction,
 }: AppSettingsProps) {
   if (!open) return null
   const chinese = language === 'zh-CN'
@@ -70,6 +72,17 @@ export function AppSettings({
         <section className="app-settings__section app-settings__tutorial">
           <div><BookOpen aria-hidden="true" /><div><h3>{chinese ? '地图教程' : 'Map tutorial'}</h3><p>{chinese ? '随时重新查看地图核心操作。' : 'Review the key map controls at any time.'}</p></div></div>
           <button type="button" onClick={onRestartTutorial}>{chinese ? '开始教程' : 'Start tutorial'}</button>
+        </section>
+
+        <section className="app-settings__section app-settings__introduction">
+          <div>
+            <MapPinned aria-hidden="true" />
+            <div>
+              <h3>{chinese ? '项目介绍' : 'About QuietMel'}</h3>
+              <p>{chinese ? '重新查看项目用途、目标用户和主要功能。' : 'Review who QuietMel is for and what it helps you do.'}</p>
+            </div>
+          </div>
+          <button type="button" onClick={onShowIntroduction}>{chinese ? '查看介绍' : 'View intro'}</button>
         </section>
 
         <section className="app-settings__section app-settings__help">

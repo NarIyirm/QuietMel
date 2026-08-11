@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ExternalLink, X } from 'lucide-react'
+import { Crosshair, ExternalLink, MapPin, X } from 'lucide-react'
 import {
   AdvancedMarker,
   APIProvider,
@@ -36,6 +36,12 @@ type MapViewProps = {
   navigationRouteId: NavigationRouteId
   reroutePreviewVisible: boolean
   activePlaceCategory: PlaceCategoryId | null
+  searchOrigin: RouteCoordinate | null
+  mapPickerOpen: boolean
+  mapPickerTitle: string
+  canSearchThisArea: boolean
+  language: 'en' | 'zh-CN'
+  chooseAreaAttention: number
   crowdPoints: LiveCrowdPoint[]
   pedestrianSensors: PedestrianSensor[]
   crowdLayerMode: CrowdLayerMode
@@ -47,6 +53,10 @@ type MapViewProps = {
   quietRouteOptions: QuietRoute[]
   onQuietRouteSelect: (routeId: string) => void
   onUserPositionChange: (position: RouteCoordinate | null) => void
+  onMapPickerConfirm: (position: RouteCoordinate) => void
+  onMapPickerCancel: () => void
+  onTryCurrentLocation: () => void
+  onSearchThisArea: (position: RouteCoordinate) => void
   onMapReady: () => void
 }
 
@@ -1139,6 +1149,7 @@ function MapContent({
   navigationRouteId,
   reroutePreviewVisible,
   activePlaceCategory,
+  searchOrigin,
   crowdPoints,
   pedestrianSensors,
   crowdLayerMode,
@@ -1347,11 +1358,19 @@ function MapContent({
 
       {activePlaceCategory ? (
         <PlaceDiscoveryOverlay
-          key={`${activePlaceCategory}:${userPosition?.lat ?? 'map'}:${userPosition?.lng ?? 'centre'}`}
+          key={`${activePlaceCategory}:${searchOrigin?.lat ?? 'map'}:${searchOrigin?.lng ?? 'centre'}`}
           categoryId={activePlaceCategory}
-          userPosition={userPosition}
+          userPosition={searchOrigin}
           onStatus={onLocationStatus}
         />
+      ) : null}
+
+      {searchOrigin && activePlaceCategory ? (
+        <AdvancedMarker position={searchOrigin} title="Selected search area" zIndex={35}>
+          <div className="search-origin-marker" aria-label="Selected search area">
+            <MapPin aria-hidden="true" size={19} fill="currentColor" />
+          </div>
+        </AdvancedMarker>
       ) : null}
 
       {userPosition ? (
@@ -1366,6 +1385,19 @@ function MapContent({
 export function MapView(props: MapViewProps) {
   const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY?.trim()
   const mapId = import.meta.env.VITE_GOOGLE_MAPS_MAP_ID?.trim() || 'DEMO_MAP_ID'
+  const cameraCenterRef = useRef<RouteCoordinate>(MELBOURNE_CENTRE)
+  const userMovedMapRef = useRef(false)
+  const [candidatePosition, setCandidatePosition] = useState<RouteCoordinate>(MELBOURNE_CENTRE)
+  const [mapMoving, setMapMoving] = useState(false)
+  const [searchAreaVisible, setSearchAreaVisible] = useState(false)
+
+  useEffect(() => {
+    if (!props.mapPickerOpen) return
+    setCandidatePosition(cameraCenterRef.current)
+    setMapMoving(false)
+    setSearchAreaVisible(false)
+    userMovedMapRef.current = false
+  }, [props.mapPickerOpen])
 
   if (!apiKey) {
     return (
@@ -1391,9 +1423,70 @@ export function MapView(props: MapViewProps) {
           gestureHandling="greedy"
           reuseMaps
           style={{ width: '100%', height: '100%' }}
+          onCameraChanged={(event) => {
+            cameraCenterRef.current = event.detail.center
+          }}
+          onDragstart={() => {
+            userMovedMapRef.current = true
+            setMapMoving(true)
+            setSearchAreaVisible(false)
+          }}
+          onIdle={() => {
+            if (!userMovedMapRef.current) return
+            const position = cameraCenterRef.current
+            setCandidatePosition(position)
+            setMapMoving(false)
+            setSearchAreaVisible(!props.mapPickerOpen && props.canSearchThisArea)
+            userMovedMapRef.current = false
+          }}
         >
           <MapContent {...props} />
         </GoogleMap>
+
+        {props.mapPickerOpen ? (
+          <div className={`map-origin-picker${mapMoving ? ' map-origin-picker--moving' : ''}`}>
+            <div className="map-origin-picker__pin" aria-hidden="true">
+              <MapPin size={34} fill="currentColor" />
+              <span />
+            </div>
+            <section className="map-origin-picker__panel" aria-label={props.mapPickerTitle}>
+              <div>
+                <strong>{props.mapPickerTitle}</strong>
+                <span>{props.language === 'zh-CN' ? '移动地图，将大头针对准搜索起点' : 'Move the map to position the pin'}</span>
+              </div>
+              <div className="map-origin-picker__actions">
+                <button type="button" className="map-origin-picker__location" onClick={props.onTryCurrentLocation}>
+                  <Crosshair aria-hidden="true" size={16} />
+                  {props.language === 'zh-CN' ? '使用定位' : 'Use my location'}
+                </button>
+                <button type="button" onClick={props.onMapPickerCancel}>
+                  {props.language === 'zh-CN' ? '取消' : 'Cancel'}
+                </button>
+                <button
+                  type="button"
+                  className={`map-origin-picker__confirm${props.chooseAreaAttention > 0 ? ' choose-area-attention' : ''}`}
+                  disabled={mapMoving}
+                  onClick={() => props.onMapPickerConfirm(candidatePosition)}
+                >
+                  {props.language === 'zh-CN' ? '使用此区域' : 'Use this area'}
+                </button>
+              </div>
+            </section>
+          </div>
+        ) : null}
+
+        {searchAreaVisible && props.canSearchThisArea ? (
+          <button
+            type="button"
+            className="search-this-area-button"
+            onClick={() => {
+              setSearchAreaVisible(false)
+              props.onSearchThisArea(candidatePosition)
+            }}
+          >
+            {props.language === 'zh-CN' ? '搜索此区域' : 'Search this area'}
+          </button>
+        ) : null}
       </APIProvider>
     </div>
   )

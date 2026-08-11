@@ -8,7 +8,7 @@ export type PlaceSelection = {
   label: string
   address: string
   location: RouteCoordinate
-  source: 'current-location' | 'google-place'
+  source: 'current-location' | 'google-place' | 'map-selected'
 }
 
 export type QuietRouteStep = {
